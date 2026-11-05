@@ -59,6 +59,8 @@ A few tools use well-known open-source programs. MyToolbox shows which ones are 
 
 Or all at once: `brew install ffmpeg yt-dlp qpdf pandoc webp`
 
+Tested with ffmpeg 8.1 and 9.0, yt-dlp 2026.10.26.
+
 ## Tools
 
 <details open>
