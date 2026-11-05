@@ -1,0 +1,7 @@
+.build/
+build/
+*.log
+.DS_Store
+.swiftpm/
+xcuserdata/
+graphify-out/
