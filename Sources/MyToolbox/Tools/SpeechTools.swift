@@ -444,16 +444,79 @@ enum Transcription {
         return cues
     }
 
+    /// Recognizes the speech in an audio or video file on device, downloading the language model first if needed.
+    /// `update` gets progress (0…1) and the cues recognized since the last call; the full list is returned.
+    static func transcribe(_ url: URL, locale: Locale,
+                           update: @escaping @MainActor (Double, [TranscriptSegment]) -> Void = { _, _ in }) async throws -> [TranscriptSegment] {
+        let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [],
+                                            attributeOptions: [.audioTimeRange])
+        if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+            try await request.downloadAndInstall()
+        }
+        await update(0, [])
+        let (audio, temp) = try await audioFile(for: url)
+        defer { if let temp { try? FileManager.default.removeItem(at: temp) } }
+        let duration = Double(audio.length) / audio.processingFormat.sampleRate
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let collector = Task { @MainActor in
+            var all: [TranscriptSegment] = []
+            for try await result in transcriber.results {
+                var words: [(String, Double, Double)] = []
+                for run in result.text.runs {
+                    let piece = String(result.text[run.range].characters)
+                    if let range = run.audioTimeRange { words.append((piece, range.start.seconds, range.end.seconds)) }
+                }
+                let cues = (words.isEmpty
+                    ? [TranscriptSegment(start: result.range.start.seconds, end: result.range.end.seconds,
+                                         text: String(result.text.characters).trimmingCharacters(in: .whitespaces))]
+                    : cues(words: words)).filter { !$0.text.isEmpty }
+                all += cues
+                update(duration > 0 ? min(1, result.range.end.seconds / duration) : 0, cues)
+            }
+            return all
+        }
+        if let last = try await analyzer.analyzeSequence(from: audio) {
+            try await analyzer.finalizeAndFinish(through: last)
+        } else {
+            await analyzer.cancelAndFinishNow()
+        }
+        return try await collector.value
+    }
+
+    @MainActor private static var cache: [String: [TranscriptSegment]] = [:]
+
+    /// Like `transcribe`, but remembers the result for the same file and language (previews ask again on every change).
+    @MainActor static func transcribeCached(_ url: URL, locale: Locale,
+                                            update: @escaping @MainActor (Double, [TranscriptSegment]) -> Void = { _, _ in }) async throws -> [TranscriptSegment] {
+        let key = "\(url.path)|\(url.fileSize)|\(locale.identifier)"
+        if let hit = cache[key] { update(1, []); return hit }
+        let segments = try await transcribe(url, locale: locale, update: update)
+        cache[key] = segments
+        return segments
+    }
+
+    /// The installed (or supported) recognizer closest to the person's language.
+    static func defaultLocale() async -> Locale {
+        await SpeechTranscriber.supportedLocale(equivalentTo: Locale.current) ?? Locale(identifier: "en_US")
+    }
+
     /// An audio file AVAudioFile can read; video and odd containers are converted to M4A first.
     static func audioFile(for url: URL) async throws -> (AVAudioFile, URL?) {
         if let file = try? AVAudioFile(forReading: url) { return (file, nil) }
-        let asset = AVURLAsset(url: url)
-        guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
-            throw ToolError("Can't read the audio in \(url.lastPathComponent)")
-        }
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
-        try await export.export(to: temp, as: .m4a)
-        return (try AVAudioFile(forReading: temp), temp)
+        if let export = AVAssetExportSession(asset: AVURLAsset(url: url), presetName: AVAssetExportPresetAppleM4A),
+           (try? await export.export(to: temp, as: .m4a)) != nil, let file = try? AVAudioFile(forReading: temp) {
+            return (file, temp)
+        }
+        // MKV, WebM and other containers AVFoundation can't open: let ffmpeg pull the sound out.
+        try? FileManager.default.removeItem(at: temp)
+        if let ffmpeg = Shell.which("ffmpeg"),
+           (try? await Shell.run(ffmpeg, ["-hide_banner", "-nostdin", "-y", "-i", url.path, "-vn", "-c:a", "aac", "-b:a", "128k", temp.path]))?.ok == true,
+           let file = try? AVAudioFile(forReading: temp) {
+            return (file, temp)
+        }
+        try? FileManager.default.removeItem(at: temp)
+        throw ToolError("Can't read the audio in \(url.lastPathComponent)")
     }
 }
 
@@ -495,45 +558,15 @@ final class TranscribeModel {
         state = .preparing("Preparing…")
         let locale = Locale(identifier: localeID)
         task = Task {
-            var tempAudio: URL?
-            defer { if let tempAudio { try? FileManager.default.removeItem(at: tempAudio) } }
             do {
-                let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [],
-                                                    attributeOptions: [.audioTimeRange])
-                if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-                    state = .preparing("Downloading the \(name(locale)) speech model…")
-                    try await request.downloadAndInstall()
-                    installed.insert(locale.identifier)
+                if !installed.contains(locale.identifier) { state = .preparing("Downloading the \(name(locale)) speech model…") }
+                segments = try await Transcription.transcribe(file, locale: locale) { [weak self] p, cues in
+                    guard let self else { return }
+                    if p == 0 && cues.isEmpty { state = .preparing("Reading audio…"); return }
+                    segments.append(contentsOf: cues)
+                    state = .running(p)
                 }
-                state = .preparing("Reading audio…")
-                let (audio, temp) = try await Transcription.audioFile(for: file)
-                tempAudio = temp
-                let duration = Double(audio.length) / audio.processingFormat.sampleRate
-                state = .running(0)
-                let analyzer = SpeechAnalyzer(modules: [transcriber])
-                let collector = Task { @MainActor in
-                    for try await result in transcriber.results {
-                        var words: [(String, Double, Double)] = []
-                        for run in result.text.runs {
-                            let piece = String(result.text[run.range].characters)
-                            if let range = run.audioTimeRange {
-                                words.append((piece, range.start.seconds, range.end.seconds))
-                            }
-                        }
-                        let cues = words.isEmpty
-                            ? [TranscriptSegment(start: result.range.start.seconds, end: result.range.end.seconds,
-                                                 text: String(result.text.characters).trimmingCharacters(in: .whitespaces))]
-                            : Transcription.cues(words: words)
-                        segments.append(contentsOf: cues.filter { !$0.text.isEmpty })
-                        if duration > 0 { state = .running(min(1, result.range.end.seconds / duration)) }
-                    }
-                }
-                if let last = try await analyzer.analyzeSequence(from: audio) {
-                    try await analyzer.finalizeAndFinish(through: last)
-                } else {
-                    await analyzer.cancelAndFinishNow()
-                }
-                try await collector.value
+                installed.insert(locale.identifier)
                 state = segments.isEmpty ? .failed("No speech was recognized. Check the language.") : .done
             } catch is CancellationError {
                 state = .idle

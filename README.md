@@ -2,8 +2,8 @@
 
 <h1 align="center">MyToolbox</h1>
 
-<p align="center"><b>81 everyday tools in one native Mac app.</b><br>
-Compress and convert video, download clips, edit and sign PDFs, redact screenshots, transcribe, translate, and tune your Mac — all on your machine, nothing uploaded.</p>
+<p align="center"><b>97 everyday tools in one native Mac app.</b><br>
+Trim, merge, crop and caption video, record your screen and voice, download clips, edit and sign PDFs, redact screenshots, transcribe, translate, and tune your Mac — all on your machine, nothing uploaded.</p>
 
 <p align="center">
 <a href="https://github.com/wenayy/MyToolbox/releases/latest"><b>Download</b></a> ·
@@ -21,8 +21,9 @@ Small jobs shouldn't need a dozen apps or a website that keeps your files. MyToo
 - **Drop anything anywhere.** Drop a file on the window, the Dock icon, or any tool, and MyToolbox offers the tools that can use it.
 - **Hover to switch.** Rest on a tool in the sidebar and it opens. Or press <kbd>⌃⌥Space</kbd> from any app to jump straight to a tool.
 - **One output folder.** Every result lands in `~/Downloads/MyToolbox`, never overwriting anything. Drag results straight out into Finder, Mail or any app.
+- **See and hear it before you save.** Video and audio tools show a live preview of the result as you change settings — a few seconds of your file made with the real settings, with a Before / After switch to compare. Burned-in captions, new speed, cleaned-up sound, black bars, crops and GIFs all show up before anything is written.
 - **Pause, resume, preview.** Long downloads and compressions can be paused. Results can be previewed right inside the tool.
-- **Private by design.** Text recognition, transcription, translation, summaries and background removal run on-device with Apple's frameworks. Nothing is sent anywhere — except Download Video, which fetches the link you give it.
+- **Private by design.** Text recognition, transcription, translation, summaries, background removal and recording run on-device with Apple's frameworks. Nothing is sent anywhere — except Download Video, which fetches the link you give it.
 
 ## Install
 
@@ -50,7 +51,7 @@ A few tools use well-known open-source programs. MyToolbox shows which ones are 
 
 | Helper | Used by |
 |---|---|
-| `ffmpeg` | Compress, Convert, GIF, Extract and Convert Audio |
+| `ffmpeg` | Every video and audio tool except Record Screen and Record Audio |
 | `yt-dlp` | Download Video |
 | `qpdf` | PDF passwords (stronger encryption; a built-in fallback exists) |
 | `pandoc` | Markdown conversions |
@@ -64,22 +65,36 @@ Tested with ffmpeg 8.1 and 9.0, yt-dlp 2026.10.26.
 ## Tools
 
 <details open>
-<summary><b>Video</b> — 4 tools</summary>
+<summary><b>Video</b> — 15 tools</summary>
 
 | Tool | What it does |
 |---|---|
-| Convert Video | Turn videos into MP4, MOV, WebM, MKV or ProRes — instantly when no re-encoding is needed |
-| Video to GIF | Make a looping GIF from a clip, with sharp colours and a size you choose |
 | Download Video | Save videos or audio from YouTube, X, Instagram, TikTok and 1000+ sites |
 | Compress Video | Make videos smaller with barely visible quality loss |
+| Convert Video | Turn videos into MP4, MOV, WebM, MKV or ProRes — instantly when no re-encoding is needed |
+| Video to GIF | Make a looping GIF from a clip, with sharp colours and a size you choose |
+| Trim Video | Cut the start and end of a clip on a timeline, without re-encoding (or frame-exact) |
+| Merge Videos | Join several clips into one MP4 in the order you choose; different shapes get black bars |
+| Crop & Rotate Video | Drag a crop frame (freeform, 1:1, 16:9, 9:16, 4:3, 4:5), rotate and flip |
+| Resize Video | 4K, 1080p, 720p, 480p, square, vertical or an exact size — fit, black bars or crop to fill |
+| Change Speed | 0.25× to 4×, keeping voices at their natural pitch, or muted |
+| Burn In Subtitles | Draw captions into the picture from an SRT/WebVTT file or an on-device transcription |
+| Replace Audio | Put new music or narration under a video — looped or once — or mix it with the original |
+| Mute Video | Remove the sound without re-encoding |
+| Extract Frames | Stills every N seconds, evenly spaced, or one moment — PNG, JPEG or HEIC at original, 1080p or 720p |
+| Media Info | Codec, resolution, frame rate, bitrate, HDR, device and location; copy as text or export JSON |
+| Record Screen | Record a display, a window or an area, with system audio and microphone, at 30 or 60 fps |
 
 </details>
 
 <details>
-<summary><b>Audio</b> — 2 tools</summary>
+<summary><b>Audio</b> — 5 tools</summary>
 
 | Tool | What it does |
 |---|---|
+| Record Audio | Record your voice in M4A or WAV, mono or stereo, then transcribe it on device |
+| Trim Audio | Cut a song or recording down, with fade in and fade out, keeping its format |
+| Clean Up Audio | Reduce background noise, rumble and hiss in recordings and videos, even out loudness, remove silences |
 | Extract Audio | Save the soundtrack of a video as M4A, MP3 or WAV |
 | Convert Audio | Switch audio between MP3, M4A, WAV, FLAC, Opus and OGG |
 
@@ -105,7 +120,7 @@ Tested with ffmpeg 8.1 and 9.0, yt-dlp 2026.10.26.
 </details>
 
 <details open>
-<summary><b>Docs & PDF</b> — 23 tools</summary>
+<summary><b>Docs & PDF</b> — 24 tools</summary>
 
 | Tool | What it does |
 |---|---|
@@ -121,6 +136,7 @@ Tested with ffmpeg 8.1 and 9.0, yt-dlp 2026.10.26.
 | Delete Pages | Remove the pages you don't need from a PDF |
 | Extract Pages | Save selected pages as a new PDF |
 | Images to PDF | Turn photos and scans into a single PDF document |
+| Crop PDF | Crop pages to a smaller size — like a 4 × 6 in shipping label — or trim every page's margins |
 | Compress PDF | Make PDFs smaller by recompressing their images |
 | Add Password | Protect PDFs with a password and limit printing or copying |
 | Remove Password | Save an unlocked copy of a password-protected PDF you own |
@@ -153,7 +169,7 @@ Tested with ffmpeg 8.1 and 9.0, yt-dlp 2026.10.26.
 </details>
 
 <details>
-<summary><b>Files</b> — 4 tools</summary>
+<summary><b>Files</b> — 5 tools</summary>
 
 | Tool | What it does |
 |---|---|
@@ -161,6 +177,7 @@ Tested with ffmpeg 8.1 and 9.0, yt-dlp 2026.10.26.
 | Batch Rename | Rename many files at once with find and replace, numbering, dates or case changes |
 | Find Duplicates | Find identical files across folders and move the extras to the Trash |
 | Zip & Unzip | Open ZIP, RAR, 7z and TAR files, or make a ZIP, with a password if you like |
+| Organize Downloads | Sort downloaded images by the site they came from (X, Instagram, Pinterest…) into folders or Photos albums |
 
 </details>
 

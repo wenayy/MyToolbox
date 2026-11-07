@@ -90,25 +90,13 @@ enum MediaArgs {
     }
 }
 
-private func runFFmpeg(_ args: [String], input: URL, output: URL, needsAudio: Bool = false,
-                       progress: @escaping @MainActor (Double) -> Void) async throws -> BatchOutput {
-    if Shell.which("ffmpeg") == nil { throw ShellError.missing("ffmpeg") }
-    if needsAudio, await FFmpeg.hasAudio(input) == false { throw ToolError("This file has no sound track.") }
-    do {
-        try await FFmpeg.run(args, duration: await FFmpeg.duration(input), progress: progress)
-    } catch {
-        try? FileManager.default.removeItem(at: output)
-        throw error
-    }
-    return BatchOutput(files: [output], note: sizeChange(input.fileSize, output.fileSize))
-}
-
 struct ConvertVideoView: View {
     @AppStorage("cv.target") private var target: MediaArgs.VideoTarget = .mp4
     @AppStorage("cv.remux") private var preferRemux = true
 
     var body: some View {
-        BatchToolView(toolID: "convertvideo", folderName: "", types: [.movie, .video], noun: "Video", verb: "Convert", concurrency: 1) {
+        BatchToolView(toolID: "convertvideo", folderName: "", types: [.movie, .video], noun: "Video", verb: "Convert", concurrency: 1,
+                      previewKey: "\(target.rawValue)|\(preferRemux)") {
             Section {
                 Picker("Convert to", selection: $target) { ForEach(MediaArgs.VideoTarget.allCases) { Text($0.rawValue).tag($0) } }
                 if target.canRemux { Toggle("Skip re-encoding when possible (instant, no quality loss)", isOn: $preferRemux) }
@@ -136,7 +124,8 @@ struct VideoToGIFView: View {
     @State private var duration = 6.0
 
     var body: some View {
-        BatchToolView(toolID: "gif", folderName: "", types: [.movie, .video], noun: "Video", verb: "Make GIF from", concurrency: 1) {
+        BatchToolView(toolID: "gif", folderName: "", types: [.movie, .video], noun: "Video", verb: "Make GIF from", concurrency: 1,
+                      previewKey: "\(fps)|\(width)|\(start)|\(duration)", previewStart: { [start] _ in start }) {
             Section {
                 Picker("Width", selection: $width) { Text("320 px").tag(320); Text("480 px").tag(480); Text("640 px").tag(640); Text("800 px").tag(800); Text("Original").tag(0) }
                 Picker("Frames per second", selection: $fps) { Text("10").tag(10); Text("15").tag(15); Text("20").tag(20); Text("25").tag(25) }
@@ -147,7 +136,10 @@ struct VideoToGIFView: View {
             }
         } process: { [fps, width, start, duration] url, folder, progress in
             let out = ImageKit.outputURL(for: url, in: folder, ext: "gif")
-            let r = try await runFFmpeg(MediaArgs.gif(url, out, fps: fps, width: width, start: start, duration: duration), input: url, output: out, progress: progress)
+            // A preview is handed a piece that already begins at the chosen start.
+            let preview = Previewing.current
+            let (s, d) = preview.map { (0, duration > 0 ? min(duration, $0.length) : 0) } ?? (start, duration)
+            let r = try await runFFmpeg(MediaArgs.gif(url, out, fps: fps, width: width, start: s, duration: d), input: url, output: out, progress: progress)
             return BatchOutput(files: r.files, note: out.fileSize.byteString)
         }
     }
@@ -157,7 +149,8 @@ struct ExtractAudioView: View {
     @AppStorage("ea.target") private var target: MediaArgs.AudioTarget = .m4a
 
     var body: some View {
-        BatchToolView(toolID: "extractaudio", folderName: "", types: [.movie, .video], noun: "Video", verb: "Extract Audio from", concurrency: 2) {
+        BatchToolView(toolID: "extractaudio", folderName: "", types: [.movie, .video], noun: "Video", verb: "Extract Audio from", concurrency: 2,
+                      previewKey: target.rawValue) {
             Section {
                 Picker("Save as", selection: $target) {
                     ForEach([MediaArgs.AudioTarget.m4a, .mp3, .wav, .flac]) { Text($0.rawValue).tag($0) }
@@ -176,7 +169,8 @@ struct ConvertAudioView: View {
     @AppStorage("ca.kbps") private var kbps = 192
 
     var body: some View {
-        BatchToolView(toolID: "convertaudio", folderName: "", types: [.audio], noun: "Audio File", verb: "Convert", concurrency: 3) {
+        BatchToolView(toolID: "convertaudio", folderName: "", types: [.audio], noun: "Audio File", verb: "Convert", concurrency: 3,
+                      previewKey: "\(target.rawValue)|\(kbps)") {
             Section {
                 Picker("Convert to", selection: $target) { ForEach(MediaArgs.AudioTarget.allCases) { Text($0.rawValue).tag($0) } }
                 if !target.lossless {

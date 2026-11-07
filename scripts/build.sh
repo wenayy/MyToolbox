@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 APP="$ROOT/build/MyToolbox.app"
-VERSION="1.0.1"
+VERSION="1.1.0"
 BUILD_NUM=$(date +%Y%m%d%H%M)
 
 mkdir -p "$ROOT/.build"
@@ -35,9 +35,11 @@ for ARCH in arm64 x86_64; do
       exit 1
     fi
   fi
+  # Newer SwiftPM writes every architecture to the same folder, so keep each binary before the next build.
+  cp "$(swift build -c release --arch $ARCH --show-bin-path)/MyToolbox" "$ROOT/.build/MyToolbox-$ARCH"
 done
 BIN="$ROOT/.build/MyToolbox-universal"
-lipo -create -output "$BIN" "$ROOT/.build/arm64-apple-macosx/release/MyToolbox" "$ROOT/.build/x86_64-apple-macosx/release/MyToolbox"
+lipo -create -output "$BIN" "$ROOT/.build/MyToolbox-arm64" "$ROOT/.build/MyToolbox-x86_64"
 
 echo "▸ Assembling bundle…"
 rm -rf "$APP"
@@ -64,6 +66,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>MyToolbox transcribes audio and video on your Mac. Nothing is uploaded.</string>
+  <key>NSMicrophoneUsageDescription</key><string>MyToolbox records your voice in Record Audio and Record Screen when you ask it to. Nothing is uploaded.</string>
+  <key>NSPhotoLibraryUsageDescription</key><string>Organize Downloads adds your downloaded images to Photos albums when you ask it to.</string>
+  <key>NSPhotoLibraryAddUsageDescription</key><string>Organize Downloads adds your downloaded images to Photos albums when you ask it to.</string>
   <key>NSLocationWhenInUseUsageDescription</key><string>macOS needs location access to tell MyToolbox the name of your current Wi-Fi network.</string>
   <key>NSLocationUsageDescription</key><string>macOS needs location access to tell MyToolbox the name of your current Wi-Fi network.</string>
   <key>NSAppleEventsUsageDescription</key><string>MyToolbox controls Keynote, Numbers, Finder and System Events only when you use a tool that needs them.</string>

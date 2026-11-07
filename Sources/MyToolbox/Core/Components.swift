@@ -217,7 +217,7 @@ enum FilePicker {
         panel.allowsMultipleSelection = multiple
         panel.canChooseDirectories = folders
         panel.canChooseFiles = files
-        if files && !types.isEmpty { panel.allowedContentTypes = types }
+        if files && !types.isEmpty { panel.allowedContentTypes = UTType.withUnknownMedia(types) }
         return panel.runModal() == .OK ? panel.urls : []
     }
 }
@@ -277,7 +277,7 @@ struct DropZone: View {
     private func add(_ new: [URL]) {
         let accepted = new.filter { url in
             if url.isDirectory { return folders }
-            guard let type = UTType(filenameExtension: url.pathExtension) else { return types.contains(.item) || types.contains(.data) }
+            guard let type = UTType.forExtension(url.pathExtension) else { return types.contains(.item) || types.contains(.data) }
             return types.contains { type.conforms(to: $0) }
         }
         if multiple {

@@ -67,6 +67,9 @@ struct CombineToolView<Options: View, Preview: View>: View {
     @ViewBuilder let options: () -> Options
     @ViewBuilder let preview: (URL) -> Preview
     let combine: @MainActor ([URL]) async throws -> URL
+    /// Everything that changes the result; set with `previewRender` to show a live preview under the list.
+    var previewKey: String?
+    var previewRender: (@MainActor ([URL], URL) async throws -> URL)?
 
     @Bindable private var run: BatchRun
     @State private var working = false
@@ -74,8 +77,12 @@ struct CombineToolView<Options: View, Preview: View>: View {
     @State private var error: String?
     @State private var targeted = false
 
-    init(toolID: String, types: [UTType], noun: String, verb: String, @ViewBuilder options: @escaping () -> Options,
+    init(toolID: String, types: [UTType], noun: String, verb: String,
+         previewKey: String? = nil, previewRender: (@MainActor ([URL], URL) async throws -> URL)? = nil,
+         @ViewBuilder options: @escaping () -> Options,
          @ViewBuilder preview: @escaping (URL) -> Preview, combine: @escaping @MainActor ([URL]) async throws -> URL) {
+        self.previewKey = previewKey
+        self.previewRender = previewRender
         self.toolID = toolID
         self.types = types
         self.noun = noun
@@ -110,6 +117,13 @@ struct CombineToolView<Options: View, Preview: View>: View {
                         .onMove { run.items.move(fromOffsets: $0, toOffset: $1) }
                     }
                     .onDeleteCommand { if let id = run.selection { run.remove([id]) } }
+                    .frame(maxHeight: previewKey == nil ? .infinity : min(CGFloat(run.items.count) * 48 + 16, 200))
+                    if let previewKey, let previewRender, run.items.count >= 2, let first = run.items.first?.url {
+                        let urls = run.items.map(\.url)
+                        Divider()
+                        LivePreviewPane(id: toolID, source: first, key: previewKey + "|" + urls.map(\.path).joined(separator: "|"),
+                                        excerpt: false, enabled: !working) { _, folder in try await previewRender(urls, folder) }
+                    }
                     Divider()
                     HStack {
                         Button { run.add(FilePicker.choose(types: types, folders: true), types: types) } label: { Label("Add \(noun)s…", systemImage: "plus") }
@@ -170,9 +184,12 @@ struct CombineToolView<Options: View, Preview: View>: View {
 }
 
 extension CombineToolView where Preview == EmptyView {
-    init(toolID: String, types: [UTType], noun: String, verb: String, @ViewBuilder options: @escaping () -> Options,
+    init(toolID: String, types: [UTType], noun: String, verb: String,
+         previewKey: String? = nil, previewRender: (@MainActor ([URL], URL) async throws -> URL)? = nil,
+         @ViewBuilder options: @escaping () -> Options,
          combine: @escaping @MainActor ([URL]) async throws -> URL) {
-        self.init(toolID: toolID, types: types, noun: noun, verb: verb, options: options, preview: { _ in EmptyView() }, combine: combine)
+        self.init(toolID: toolID, types: types, noun: noun, verb: verb, previewKey: previewKey, previewRender: previewRender,
+                  options: options, preview: { _ in EmptyView() }, combine: combine)
     }
 }
 

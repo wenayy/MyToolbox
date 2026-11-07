@@ -372,6 +372,348 @@ wait(1800) {
     } else { check(false, "img2pdf: code found") }
 }
 
+// MARK: - Video & audio editing (1.1)
+
+func near(_ a: Double, _ b: Double, _ tol: Double = 0.35) -> Bool { abs(a - b) <= tol }
+
+wait(2400) {
+    // Batch tools, driven through their real Run closures.
+    for (preset, fit, expect) in [(ResizePreset.fhd, VideoEditArgs.Fit.fit, (1920, 1080)), (.vertical, .pad, (1080, 1920)),
+                                  (.square, .fill, (1080, 1080)), (.hd, .fit, (1280, 720))] {
+        defaults.set(preset.rawValue, forKey: "rv.preset"); defaults.set(fit.rawValue, forKey: "rv.fit"); defaults.set(true, forKey: "rv.keep")
+        for v in [clip, vertical] {
+            await run("resizevideo", v, "\(preset.rawValue), \(fit.rawValue)") { r in
+                let p = probe(r.files[0])
+                switch fit {
+                case .pad, .fill: return p.width == expect.0 && p.height == expect.1 ? nil : "got \(p.width)×\(p.height)"
+                case .fit: return p.width <= expect.0 && p.height <= expect.1 && p.width % 2 == 0 && p.height % 2 == 0 ? nil : "got \(p.width)×\(p.height)"
+                }
+            }
+        }
+    }
+    defaults.set(ResizePreset.custom.rawValue, forKey: "rv.preset"); defaults.set(641, forKey: "rv.width"); defaults.set(361, forKey: "rv.height")
+    defaults.set(false, forKey: "rv.keep")
+    await run("resizevideo", webm, "custom odd 641×361 stretched") { r in let p = probe(r.files[0]); return p.width == 640 && p.height == 360 ? nil : "got \(p.width)×\(p.height)" }
+    defaults.set(true, forKey: "rv.keep")
+
+    for (speed, pitch) in [(2.0, true), (0.5, true), (4.0, false), (0.25, true)] {
+        defaults.set(speed, forKey: "speed.value"); defaults.set(pitch, forKey: "speed.pitch"); defaults.set(false, forKey: "speed.mute")
+        await run("speed", clip, "\(speed)× pitch \(pitch)") { r in
+            let p = probe(r.files[0])
+            return near(p.duration, 4 / speed, 0.25 + 0.1 / speed) && p.audio != nil ? nil : "length \(p.duration), audio \(p.audio ?? "none")"
+        }
+    }
+    defaults.set(1.5, forKey: "speed.value"); defaults.set(true, forKey: "speed.mute")
+    await run("speed", vertical, "1.5× muted") { r in probe(r.files[0]).audio == nil ? nil : "still has sound" }
+    defaults.set(2.0, forKey: "speed.value"); defaults.set(false, forKey: "speed.mute")
+    await run("speed", silent, "2× no sound track")
+    await run("speed", webm, "2× webm")
+
+    for (mode, format) in [(FrameMode.every, ImageFormat.png), (.evenly, .jpeg), (.single, .heic)] {
+        defaults.set(mode.rawValue, forKey: "frames.mode"); defaults.set(format.rawValue, forKey: "frames.format")
+        defaults.set(1.0, forKey: "frames.interval"); defaults.set(5, forKey: "frames.count"); defaults.set(1.5, forKey: "frames.at"); defaults.set(720, forKey: "frames.size")
+        await run("frames", clip, "\(mode.rawValue) \(format.rawValue)") { r in
+            let files = r.files[0].isDirectory ? (try? FileManager.default.contentsOfDirectory(at: r.files[0], includingPropertiesForKeys: nil)) ?? [] : r.files
+            let expected = mode == .every ? 4...5 : mode == .evenly ? 5...5 : 1...1
+            guard expected.contains(files.count) else { return "\(files.count) frames, expected \(expected)" }
+            guard let img = try? ImageKit.load(files[0]), min(img.width, img.height) == 720 else { return "frame isn't 720p" }
+            return files.allSatisfy { $0.pathExtension == format.ext } ? nil : "wrong format"
+        }
+    }
+    defaults.set(0.5, forKey: "frames.interval"); defaults.set(FrameMode.every.rawValue, forKey: "frames.mode"); defaults.set(0, forKey: "frames.size")
+    await run("frames", vertical, "every 0.5 s, original size")
+
+    for v in [clip, vertical, hevc] {
+        await run("mutevideo", v) { r in let p = probe(r.files[0]); return p.audio == nil && p.video != nil ? nil : "audio left or video lost" }
+    }
+    await run("mutevideo", silent, "already silent")
+
+    defaults.set(mp3.path, forKey: "ra.audio")
+    for (fit, vol) in [(AudioFit.loop, 0.0), (.once, 0.4)] {
+        defaults.set(fit.rawValue, forKey: "ra.fit"); defaults.set(vol, forKey: "ra.original")
+        for v in [clip, silent, vertical] {
+            await run("replaceaudio", v, "\(fit.rawValue), original \(vol)") { r in
+                let p = probe(r.files[0]), src = probe(v)
+                return p.audio != nil && near(p.duration, src.duration) ? nil : "audio \(p.audio ?? "none"), \(p.duration)s vs \(src.duration)s"
+            }
+        }
+    }
+    defaults.set(speech.path, forKey: "ra.audio")
+    await run("replaceaudio", hevc, "speech under HEVC")
+    defaults.set(clip.path, forKey: "ra.audio")
+    await run("replaceaudio", clip, "same file", expectError: true)
+
+    // Burn subtitles from the matching .srt next to the video, in every style.
+    try? "1\n00:00:00,500 --> 00:00:03,000\nHello, this is été ünïcode\n\n2\n00:00:03,000 --> 00:00:04,000\nSecond line\n"
+        .write(to: clip.deletingPathExtension().appendingPathExtension("srt"), atomically: true, encoding: .utf8)
+    try? "WEBVTT\n\n00:00.200 --> 00:01.800\nVertical caption\n".write(to: url("vertical phone.en.vtt"), atomically: true, encoding: .utf8)
+    defaults.set(SubtitleSource.file.rawValue, forKey: "subs.source")
+    for look in VideoEditArgs.SubtitleStyle.Look.allCases {
+        defaults.set(look.rawValue, forKey: "subs.look")
+        await run("burnsubs", clip, look.rawValue) { r in probe(r.files[0]).duration > 3 ? nil : "too short" }
+    }
+    defaults.set(VideoEditArgs.SubtitleStyle.Position.top.rawValue, forKey: "subs.position"); defaults.set("Large", forKey: "subs.size")
+    await run("burnsubs", vertical, "VTT, top, large")
+    await run("burnsubs", hevc, "no subtitle file", expectError: true)
+    if !CommandLine.arguments.contains("fast") {
+        let talking = makeVideo("talking head.mp4", ["-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25", "-i", speech.path, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+        defaults.set(SubtitleSource.transcribe.rawValue, forKey: "subs.source"); defaults.set(true, forKey: "subs.saveSRT")
+        TranscribeModel.shared.localeID = "en_US"
+        await run("burnsubs", talking, "transcribed") { r in
+            r.files.count == 2 && (try? String(contentsOf: r.files[1], encoding: .utf8))?.lowercased().contains("test") == true ? nil : "no transcript saved: \(r.files.map(\.lastPathComponent))"
+        }
+        defaults.set(SubtitleSource.file.rawValue, forKey: "subs.source")
+    }
+
+    for strength in CleanStrength.allCases {
+        defaults.set(strength.rawValue, forKey: "clean.strength")
+        defaults.set(true, forKey: "clean.rumble"); defaults.set(strength == .strong, forKey: "clean.loudness"); defaults.set(strength != .light, forKey: "clean.silences")
+        for f in [speech, mp3, flac, clip, vertical] {
+            await run("cleanaudio", f, strength.rawValue) { r in
+                let p = probe(r.files[0]), isVideo = probe(f).video != nil
+                if p.audio == nil { return "no audio" }
+                if isVideo && (p.video == nil || !near(p.duration, probe(f).duration, 0.2)) { return "video lost or out of sync" }
+                return nil
+            }
+        }
+    }
+    await run("cleanaudio", silent, "no sound", expectError: true)
+
+    // Single-file editors, through the same functions their buttons call.
+    func edit(_ name: String, _ body: () async throws -> URL, validate: (URL) -> String?) async {
+        do {
+            let u = try await body()
+            let problem = opens(u) ?? validate(u)
+            check(problem == nil, "\(name) → \(u.lastPathComponent) \(problem ?? "")")
+        } catch { check(false, "\(name): \(error.localizedDescription)") }
+    }
+    for v in [clip, vertical, webm, hevc] {
+        for exact in [false, true] {
+            await edit("trim \(v.lastPathComponent) 0.5–1.8 exact \(exact)", { try await MediaEdits.trimVideo(v, start: 0.5, end: 1.8, exact: exact) { _ in } }) { u in
+                let d = probe(u).duration
+                return d > 0.9 && d < 2.6 ? nil : "length \(d)"
+            }
+        }
+    }
+    do { _ = try await MediaEdits.trimVideo(clip, start: 1, end: 1.01, exact: false) { _ in }; check(false, "trim refuses an empty selection") }
+    catch { check(true, "trim refuses an empty selection — \(error.localizedDescription)") }
+    for a in audios {
+        await edit("trim audio \(a.lastPathComponent) with fades", { try await MediaEdits.trimAudio(a, start: 0.2, end: 1.7, fadeIn: 0.5, fadeOut: 0.5) { _ in } }) { u in
+            let p = probe(u)
+            return near(p.duration, 1.5, 0.12) && u.pathExtension == AudioEncoding.forExtension(a.pathExtension).ext ? nil : "\(p.duration)s .\(u.pathExtension)"
+        }
+    }
+    for (rect, turns, fh, fv, expect) in [(CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5), 0, false, false, (640, 360)),
+                                          (CGRect(x: 0, y: 0, width: 1, height: 1), 1, false, false, (720, 1280)),
+                                          (CGRect(x: 0.1, y: 0, width: 0.5625 * 0.8, height: 0.8), 2, true, true, (576, 576)),
+                                          (CGRect(x: 0, y: 0, width: 1, height: 1), 0, true, false, (1280, 720))] {
+        await edit("crop \(rect) turns \(turns) flip \(fh)/\(fv)", {
+            try await MediaEdits.crop(clip, rect: rect, source: CGSize(width: 1280, height: 720), quarterTurns: turns, flipH: fh, flipV: fv, format: .same) { _ in }
+        }) { u in
+            let p = probe(u)
+            return abs(p.width - expect.0) <= 2 && abs(p.height - expect.1) <= 2 ? nil : "got \(p.width)×\(p.height), expected \(expect.0)×\(expect.1)"
+        }
+    }
+    do {
+        _ = try await MediaEdits.crop(clip, rect: CGRect(x: 0, y: 0, width: 1, height: 1), source: CGSize(width: 1280, height: 720), quarterTurns: 4, flipH: false, flipV: false, format: .same) { _ in }
+        check(false, "crop refuses when nothing changes")
+    } catch { check(true, "crop refuses when nothing changes — \(error.localizedDescription)") }
+    for size in MediaEdits.MergeSize.allCases where size != .uhd {
+        await edit("merge 4 mixed clips at \(size.rawValue)", { try await MediaEdits.merge([clip, vertical, silent, webm], size: size, name: "Merged \(size.rawValue)") }) { u in
+            let p = probe(u)
+            let want = size == .sd ? (1280, 720) : size == .hd ? (1920, 1080) : (1280, 720)
+            return near(p.duration, 10, 0.5) && p.audio != nil && p.width == want.0 && p.height == want.1 ? nil : "\(p.duration)s \(p.width)×\(p.height) audio \(p.audio ?? "none")"
+        }
+    }
+    await edit("merge vertical first → vertical frame", { try await MediaEdits.merge([vertical, clip], size: .hd, name: "Merged vertical") }) { u in
+        let p = probe(u); return p.width == 1080 && p.height == 1920 ? nil : "\(p.width)×\(p.height)"
+    }
+
+    // Media Info
+    for f in videos + audios {
+        do {
+            let p = try await MediaProbe.read(f)
+            let text = MediaReport.text(f, p)
+            check(text.contains("Duration") && (p.video == nil || text.contains("Resolution")) && (p.audio == nil || text.contains("Sample rate")),
+                  "media info \(f.lastPathComponent): \(MediaReport.sections(f, p).count) sections")
+        } catch { check(false, "media info \(f.lastPathComponent): \(error.localizedDescription)") }
+    }
+    let located = url("located.mov")
+    sh(ff, ["-hide_banner", "-loglevel", "error", "-y", "-i", clip.path, "-c", "copy", "-movflags", "use_metadata_tags",
+            "-metadata", "com.apple.quicktime.location.ISO6709=+48.8584+002.2945+035.000/", "-metadata", "com.apple.quicktime.make=Apple", located.path])
+    if let p = try? await MediaProbe.read(located), let loc = MediaReport.location(p) {
+        check(near(loc.lat, 48.8584, 0.001) && near(loc.lon, 2.2945, 0.001), "media info reads the recording location")
+    } else { check(false, "media info reads the recording location") }
+}
+
+// MARK: - Crop PDF, Organize Downloads, units (1.1)
+
+wait(600) {
+    for (size, scope) in [(PDFCropSize.label, PDFCropScope.all), (.free, .trimEach), (.a6, .shown)] {
+        do {
+            let doc = try DocKit.open(report)
+            let page = doc.page(at: 0)!
+            let rect = PDFCrop.fixedRect(size, page: page) ?? CGRect(x: 0.1, y: 0.1, width: 0.5, height: 0.5)
+            let out = try PDFCrop.crop(report, rect: rect, scope: scope, shownPage: 1)
+            let cropped = PDFDocument(url: out)!
+            let b0 = cropped.page(at: 0)!.bounds(for: .mediaBox), b1 = cropped.page(at: 1)!.bounds(for: .mediaBox)
+            let ok: Bool
+            switch scope {
+            case .all: ok = b0.width == 288 && b0.height == 432 && b0 == b1
+            case .trimEach: ok = b0.width < 612 && b0.height < 792 && b0.width > 50 && cropped.pageCount == 3
+            case .shown: ok = b0.width == 612 && b1.width < 612
+            }
+            check(ok, "crop PDF \(size.rawValue), \(scope.rawValue) → page 1 \(Int(b0.width))×\(Int(b0.height)), page 2 \(Int(b1.width))×\(Int(b1.height))")
+        } catch { check(false, "crop PDF \(size.rawValue): \(error.localizedDescription)") }
+    }
+    // A rotated page maps back to the right part of the unrotated page.
+    if let doc = PDFDocument(url: report), let page = doc.page(at: 0) {
+        page.rotation = 90
+        let r = PDFCrop.boxRect(CGRect(x: 0, y: 0, width: 0.5, height: 1), page: page)
+        check(r == CGRect(x: 0, y: 0, width: 612, height: 396), "crop PDF maps a rotated page: \(r)")
+    }
+
+    // Where-from metadata → sources.
+    let dl = root.appendingPathComponent("downloads")
+    try? FileManager.default.createDirectory(at: dl, withIntermediateDirectories: true)
+    func download(_ name: String, from: [String]) {
+        let f = dl.appendingPathComponent(name)
+        try? FileManager.default.copyItem(at: logo, to: f)
+        if !from.isEmpty, let data = try? PropertyListSerialization.data(fromPropertyList: from, format: .binary, options: 0) {
+            _ = data.withUnsafeBytes { setxattr(f.path, "com.apple.metadata:kMDItemWhereFroms", $0.baseAddress, data.count, 0, 0) }
+        }
+    }
+    download("tweet.png", from: ["https://pbs.twimg.com/media/abc.png", "https://x.com/someone/status/1"])
+    download("pin.png", from: ["https://i.pinimg.com/originals/x.png"])
+    download("blog.png", from: ["https://cdn.example.org/a.png", "https://www.example.com/post"])
+    download("mystery.png", from: [])
+    let rules = DownloadSources.defaults
+    let src = { (n: String) in DownloadSources.source(DownloadSources.whereFroms(dl.appendingPathComponent(n)), rules: rules) }
+    check(src("tweet.png") == "X" && src("pin.png") == "Pinterest" && src("blog.png") == "example.com" && src("mystery.png") == nil,
+          "organize downloads reads Where From: \(src("tweet.png") ?? "-"), \(src("pin.png") ?? "-"), \(src("blog.png") ?? "-"), \(src("mystery.png") ?? "none")")
+    do {
+        let found = try OrganizeModel.images(in: dl, rules: rules)
+        try OrganizeModel.move(found.map { ($0.url, $0.source ?? "Unknown") }, into: dl)
+    } catch { check(false, "organize downloads: \(error.localizedDescription)") }
+    let made = Set(((try? FileManager.default.contentsOfDirectory(atPath: dl.path)) ?? []))
+    check(made.isSuperset(of: ["X", "Pinterest", "example.com", "Unknown"]) && !made.contains("tweet.png"), "organize downloads moves into folders: \(made.sorted())")
+
+    // Small pure pieces.
+    check(VideoEditArgs.atempoChain(4) == "atempo=2,atempo=2.0000" && VideoEditArgs.atempoChain(0.25) == "atempo=0.5,atempo=0.5000", "atempo chains: \(VideoEditArgs.atempoChain(0.25))")
+    check(TimecodeField.parse("1:02.5") == 62.5 && TimecodeField.parse("83") == 83 && TimecodeField.parse("1:00:00") == 3600 && TimecodeField.parse("x") == nil
+          && TimecodeField.format(62.5) == "1:02.500" && TimecodeField.format(3723.25) == "1:02:03.250"
+          && TimecodeField.parse(TimecodeField.format(83.125)) == 83.125, "timecode fields parse and format: \(TimecodeField.format(62.5))")
+    check(RecordResolution.p1080.size(points: CGSize(width: 1512, height: 982), scale: 2) == CGSize(width: 1662, height: 1080)
+          && RecordResolution.native.size(points: CGSize(width: 1512, height: 982), scale: 2) == CGSize(width: 3024, height: 1964), "screen recording sizes")
+    check(AudioEncoding.forExtension("AIFF").ext == "aiff" && AudioEncoding.forExtension("wma").ext == "m4a", "audio keeps its format, unknown → M4A")
+    check(CropEditor.centered(aspect: 1, picture: CGSize(width: 1920, height: 1080)).width - 0.5625 < 0.001, "square crop on 16:9 is centred")
+}
+
+// MARK: - Live previews (1.1)
+
+/// Runs a tool's live preview the way the pane does and returns what it would show.
+@MainActor func livePreview(_ id: String, _ file: URL, start: ((URL) async -> Double?)? = nil) async -> LivePreviewModel? {
+    guard let p = process(id) else { check(false, "\(id): processing code found"); return nil }
+    let model = LivePreviewModel.for("e2e-\(id)-\(UUID().uuidString.prefix(4))")
+    let render: @MainActor (URL, URL) async throws -> URL = { input, folder in try LivePreview.showable(try await p(input, folder) { _ in }) }
+    await model.run(source: file, excerpt: true, preferredStart: start, render: render)
+    if model.phase == .idle { await model.run(source: file, excerpt: true, preferredStart: start, render: render) }   // start moved: run again
+    return model
+}
+
+func meanBottomDifference(_ a: CGImage, _ b: CGImage) -> Double {
+    let w = 160, h = 90
+    func pixels(_ i: CGImage) -> [UInt8] {
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        let c = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        c.draw(i, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return px
+    }
+    let pa = pixels(a), pb = pixels(b)
+    var sum = 0.0
+    for y in (h * 3 / 4)..<h { for x in 0..<w { let i = (y * w + x) * 4; sum += Double(abs(Int(pa[i]) - Int(pb[i]))) } }
+    return sum / Double(w * h / 4)
+}
+
+wait(900) {
+    @MainActor func ready(_ m: LivePreviewModel?, _ name: String, _ validate: (URL) -> String? = { _ in nil }) {
+        guard let m else { return }
+        guard m.phase == .ready, let after = m.after, let before = m.before else { check(false, "preview \(name): \(m.phase)"); return }
+        let problem = opens(after) ?? validate(after)
+        check(problem == nil, "preview \(name) → \(after.lastPathComponent) (before \(before.lastPathComponent)) \(problem ?? "")")
+    }
+    defaults.set(2.0, forKey: "speed.value"); defaults.set(true, forKey: "speed.pitch"); defaults.set(false, forKey: "speed.mute")
+    ready(await livePreview("speed", clip), "speed 2×") { near(probe($0).duration, 2, 0.3) ? nil : "length \(probe($0).duration)" }
+    defaults.set(1.0, forKey: "speed.value")
+    if let m = await livePreview("speed", clip) { check(m.phase == .note("Speed is 1× — nothing to change"), "preview explains when nothing would change: \(m.phase)") }
+    defaults.set(2.0, forKey: "speed.value")
+    defaults.set(ResizePreset.vertical.rawValue, forKey: "rv.preset"); defaults.set(VideoEditArgs.Fit.pad.rawValue, forKey: "rv.fit"); defaults.set(true, forKey: "rv.keep")
+    ready(await livePreview("resizevideo", clip), "resize vertical bars") { let p = probe($0); return p.width == 1080 && p.height == 1920 ? nil : "\(p.width)×\(p.height)" }
+    defaults.set(VideoQuality.small.rawValue, forKey: "cv.quality")
+    ready(await livePreview("compressvideo", hevc), "compress")
+    defaults.set(MediaArgs.VideoTarget.webm.rawValue, forKey: "cv.target"); defaults.set(false, forKey: "cv.remux")
+    ready(await livePreview("convertvideo", clip), "convert to WebM, played as MP4") { $0.pathExtension == "mp4" ? nil : "not converted for playback" }
+    ready(await livePreview("gif", vertical), "GIF") { $0.pathExtension == "gif" ? nil : "not a GIF" }
+    defaults.set(MediaArgs.AudioTarget.ogg.rawValue, forKey: "ca.target")
+    ready(await livePreview("convertaudio", flac), "OGG, playable here") { u in
+        let a = AVURLAsset(url: u)
+        var ok = false
+        let sem = DispatchSemaphore(value: 0)
+        Task.detached { ok = (try? await a.load(.isPlayable)) == true; sem.signal() }
+        sem.wait()
+        return ok ? nil : "not playable"
+    }
+    defaults.set(MediaArgs.AudioTarget.mp3.rawValue, forKey: "ea.target")
+    ready(await livePreview("extractaudio", clip), "extract audio") { probe($0).video == nil ? nil : "still has picture" }
+    defaults.set(CleanStrength.strong.rawValue, forKey: "clean.strength"); defaults.set(true, forKey: "clean.loudness")
+    ready(await livePreview("cleanaudio", speech), "clean up voice")
+    ready(await livePreview("cleanaudio", clip), "clean up video sound") { probe($0).video != nil ? nil : "picture lost" }
+    defaults.set(mp3.path, forKey: "ra.audio"); defaults.set(0.3, forKey: "ra.original")
+    ready(await livePreview("replaceaudio", vertical), "replace audio")
+
+    // Subtitles from the file next to the video, previewed from later in the video, stay lined up.
+    defaults.set(SubtitleSource.file.rawValue, forKey: "subs.source"); defaults.set(VideoEditArgs.SubtitleStyle.Position.bottom.rawValue, forKey: "subs.position")
+    defaults.set(VideoEditArgs.SubtitleStyle.Look.box.rawValue, forKey: "subs.look")
+    let srt = clip.deletingPathExtension().appendingPathExtension("srt")
+    check(SubtitleFiles.firstCue(srt) == 0.5, "preview starts at the first subtitle: \(SubtitleFiles.firstCue(srt) ?? -1)")
+    let subsModel = await livePreview("burnsubs", clip) { _ in 1.0 }
+    ready(subsModel, "burn subtitles from 0:01")
+    if let m = subsModel, let a = m.after, let b = m.before,
+       let fa = try? await VideoFrame.grab(a, at: 0.5, maxSize: 640), let fb = try? await VideoFrame.grab(b, at: 0.5, maxSize: 640) {
+        let d = meanBottomDifference(fa, fb)
+        check(m.start == 1.0 && d > 8, "preview draws the caption due at 0:01.5 (bottom changed by \(Int(d)))")
+    } else { check(false, "preview subtitle frames") }
+
+    // Crop and merge previews go through the same functions as their Export / Merge buttons.
+    let cropModel = LivePreviewModel.for("e2e-crop")
+    await cropModel.run(source: clip, excerpt: true, preferredStart: nil) { input, folder in
+        let p = try await MediaProbe.read(input)
+        return try await MediaEdits.crop(input, rect: CGRect(x: 0.25, y: 0, width: 0.5, height: 1), source: p.displaySize, quarterTurns: 1,
+                                         flipH: false, flipV: false, format: .same, folder: folder) { _ in }
+    }
+    ready(cropModel, "crop half, turned") { let p = probe($0); return p.width == 720 && p.height == 640 ? nil : "\(p.width)×\(p.height)" }
+    if let render = combine("mergevideos") {
+        _ = render
+        let mergeModel = LivePreviewModel.for("e2e-merge")
+        await mergeModel.run(source: clip, excerpt: false, preferredStart: nil) { _, folder in
+            var pieces: [URL] = []
+            for u in [clip, vertical, silent] { pieces.append(try await LivePreview.excerpt(u, start: 0, length: 3, video: true)) }
+            return try await MediaEdits.merge(pieces, size: .sd, name: "Merged Video", folder: folder)
+        }
+        ready(mergeModel, "merge 3 clips") { near(probe($0).duration, 7, 0.5) ? nil : "length \(probe($0).duration)" }
+    }
+    // Trim Audio's "Hear Result" renders the same file Trim saves, into the preview folder.
+    if let u = try? await MediaEdits.trimAudio(mp3, start: 0.2, end: 2, fadeIn: 0.5, fadeOut: 0.5, folder: LivePreview.newFolder()) { _ in } {
+        check(u.path.hasPrefix(LivePreview.dir.path) && near(probe(u).duration, 1.8, 0.1), "hear trimmed audio before saving")
+    } else { check(false, "hear trimmed audio before saving") }
+    let opus = url("voice.opus"); try? Data().write(to: opus)
+    check(ToolRegistry.tool("gif")!.accepts(vertical) && BatchRun.matches(vertical, [.movie, .video]) && BatchRun.matches(opus, [.audio])
+          && ToolRegistry.tool("cleanaudio")!.accepts(opus), "MKV and Opus files are taken by video and audio tools")
+    check(FrameExtractor.times(mode: .every, duration: 4, interval: 1, count: 0, at: 0) == [0, 1, 2, 3]
+          && FrameExtractor.times(mode: .evenly, duration: 4, interval: 0, count: 2, at: 0) == [1, 3], "frame tiles show the right moments")
+}
+
 // MARK: - Every tool opens
 
 wait(120) {

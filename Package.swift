@@ -23,6 +23,9 @@ let package = Package(
                 .linkedFramework("IOKit"),
                 .linkedFramework("WebKit"),
                 .linkedFramework("Quartz"),
+                .linkedFramework("AVKit"),
+                .linkedFramework("ScreenCaptureKit"),
+                .linkedFramework("Photos"),
             ]
         )
     ]

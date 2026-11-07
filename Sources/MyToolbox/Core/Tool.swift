@@ -82,14 +82,15 @@ struct Tool: Identifiable {
 
     func accepts(_ url: URL) -> Bool {
         if url.isDirectory { return !accepts.isEmpty && accepts.contains { $0 != .text && $0 != .plainText } }
-        guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
+        guard let type = UTType.forExtension(url.pathExtension) else { return false }
         return accepts.contains { type.conforms(to: $0) }
     }
 }
 
 /// Every tool in the app. Each category file contributes its own list.
 enum ToolRegistry {
-    static let all: [Tool] = videoTools + conversionTools + imageTools + editorTools + docTools + textTools + fileTools + macTools + developerTools
+    static let all: [Tool] = videoTools + conversionTools + videoEditTools + audioTools + imageTools + editorTools + docTools + cropPDFTools
+        + textTools + fileTools + organizeTools + macTools + developerTools
 
     static func tools(in category: ToolCategory) -> [Tool] { all.filter { $0.category == category } }
     static func tool(_ id: String) -> Tool? { all.first { $0.id == id } }
@@ -98,5 +99,28 @@ enum ToolRegistry {
         all.compactMap { tool in tool.score(query).map { (tool, $0) } }
             .sorted { $0.1 > $1.1 }
             .map(\.0)
+    }
+}
+
+extension UTType {
+    /// Containers macOS has no type for unless a player that declares them is installed.
+    static let unknownVideoExtensions = ["mkv", "mk3d", "flv", "f4v", "ts", "m2ts", "mts", "vob", "ogv", "rm", "rmvb", "divx", "wmv", "asf", "3gp"]
+    static let unknownAudioExtensions = ["opus", "oga", "mka", "ape", "wv", "weba", "tta", "dsf"]
+
+    /// The type of a file extension, counting MKV, Opus and the like as video or audio even when macOS doesn't know them.
+    static func forExtension(_ ext: String) -> UTType? {
+        let e = ext.lowercased()
+        let type = UTType(filenameExtension: e)
+        if let type, !type.isDynamic { return type }
+        if unknownVideoExtensions.contains(e) { return .movie }
+        if unknownAudioExtensions.contains(e) { return .audio }
+        return type
+    }
+
+    /// `types` plus whatever macOS calls those unknown containers, so open panels let them be chosen.
+    static func withUnknownMedia(_ types: [UTType]) -> [UTType] {
+        let video = types.contains { UTType.movie.conforms(to: $0) }, audio = types.contains { UTType.audio.conforms(to: $0) }
+        let extra = (video ? unknownVideoExtensions : []) + (audio ? unknownAudioExtensions : [])
+        return types + extra.compactMap { UTType(filenameExtension: $0) }.filter { $0.isDynamic }
     }
 }

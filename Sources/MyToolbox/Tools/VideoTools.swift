@@ -693,10 +693,10 @@ enum FFmpeg {
     }
 
     /// Runs ffmpeg with `-progress pipe:1`, reporting 0…1.
-    static func run(_ args: [String], duration: Double?, progress: @escaping @MainActor (Double) -> Void) async throws {
+    static func run(_ args: [String], duration: Double?, cwd: URL? = nil, progress: @escaping @MainActor (Double) -> Void) async throws {
         let exe = try Shell.require("ffmpeg")
         var errors: [String] = []
-        let code = try await Shell.stream(exe, args) { line in
+        let code = try await Shell.stream(exe, args, cwd: cwd) { line in
             if line.hasPrefix("out_time_us="), let us = Double(line.dropFirst(12)), let d = duration, d > 0 {
                 MainActor.assumeIsolated { progress(us / 1_000_000 / d) }
             } else if !line.contains("=") {
@@ -718,6 +718,9 @@ enum FFmpeg {
         }
         if all.contains("No space left on device") { return "The disk is full." }
         if all.contains("Permission denied") { return "MyToolbox isn't allowed to read or write that file." }
+        if all.contains("No such filter: 'subtitles'") || all.contains("No such filter: 'ass'") {
+            return "Your ffmpeg can't draw subtitles (it was built without libass). Reinstall it in Terminal with: brew reinstall ffmpeg"
+        }
         if all.contains("Unknown encoder") || all.contains("Encoder not found") {
             return "Your ffmpeg can't make this format. Update it in Terminal with: brew upgrade ffmpeg"
         }
@@ -737,7 +740,7 @@ struct CompressVideoView: View {
 
     var body: some View {
         BatchToolView(toolID: "compressvideo", folderName: "Compress Video", types: [.movie, .video], noun: "Video", verb: "Compress",
-                      concurrency: 1) {
+                      concurrency: 1, previewKey: String(describing: settings)) {
             Section("Quality") {
                 Picker("Quality", selection: $settings.quality) {
                     ForEach(VideoQuality.allCases) { Text($0.rawValue).tag($0) }

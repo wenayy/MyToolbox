@@ -93,7 +93,7 @@ final class BatchRun {
     }
 
     static func matches(_ url: URL, _ types: [UTType]) -> Bool {
-        guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
+        guard let type = UTType.forExtension(url.pathExtension) else { return false }
         return types.contains { type.conforms(to: $0) }
     }
 
@@ -207,6 +207,10 @@ struct BatchToolView<Options: View, Preview: View>: View {
     let noun: String
     let verb: String
     var concurrency = 2
+    /// Everything that changes the result. Set it to show a live preview of the selected file under the list.
+    var previewKey: String?
+    /// Where in the file the live preview should start (say, at the first subtitle); nil picks a spot itself.
+    var previewStart: ((URL) async -> Double?)?
     @ViewBuilder let options: () -> Options
     @ViewBuilder let preview: (URL) -> Preview
     let process: BatchProcess
@@ -215,6 +219,7 @@ struct BatchToolView<Options: View, Preview: View>: View {
     @State private var targeted = false
 
     init(toolID: String, folderName: String, types: [UTType], noun: String, verb: String, concurrency: Int = 2,
+         previewKey: String? = nil, previewStart: ((URL) async -> Double?)? = nil,
          @ViewBuilder options: @escaping () -> Options,
          @ViewBuilder preview: @escaping (URL) -> Preview,
          process: @escaping @MainActor (URL, URL, @escaping @MainActor (Double) -> Void) async throws -> BatchOutput) {
@@ -224,6 +229,8 @@ struct BatchToolView<Options: View, Preview: View>: View {
         self.noun = noun
         self.verb = verb
         self.concurrency = concurrency
+        self.previewKey = previewKey
+        self.previewStart = previewStart
         self.options = options
         self.preview = preview
         self.process = process
@@ -252,21 +259,15 @@ struct BatchToolView<Options: View, Preview: View>: View {
             if run.items.isEmpty {
                 emptyState
             } else {
-                List(selection: $run.selection) {
-                    ForEach(run.items) { item in
-                        BatchRow(item: item, remove: run.running ? nil : { run.remove([item.id]) }).tag(item.id)
-                            .contextMenu {
-                                if let out = item.outputs.first {
-                                    Button("Show Result in Finder") { NSWorkspace.shared.activateFileViewerSelecting(item.outputs) }
-                                    Button("Open Result") { NSWorkspace.shared.open(out) }
-                                    Divider()
-                                }
-                                Button("Show Original in Finder") { item.url.reveal() }
-                                Button("Remove from List") { run.remove([item.id]) }.disabled(run.running)
-                            }
+                fileList
+                    .frame(maxHeight: previewKey == nil ? .infinity : min(CGFloat(run.items.count) * 48 + 16, 200))
+                if let previewKey, let item = run.selectedItem {
+                    Divider()
+                    LivePreviewPane(id: toolID, source: item.url, key: previewKey, enabled: !run.running,
+                                    preferredStart: previewStart) { [process] input, folder in
+                        try LivePreview.showable(try await process(input, folder) { _ in })
                     }
                 }
-                .onDeleteCommand { if let id = run.selection { run.remove([id]) } }
                 Divider()
                 HStack {
                     Button { choose() } label: { Label("Add \(noun)s…", systemImage: "plus") }
@@ -289,6 +290,24 @@ struct BatchToolView<Options: View, Preview: View>: View {
                     .background(Color.accentColor.opacity(0.06)).padding(6).allowsHitTesting(false)
             }
         }
+    }
+
+    private var fileList: some View {
+        List(selection: $run.selection) {
+            ForEach(run.items) { item in
+                BatchRow(item: item, remove: run.running ? nil : { run.remove([item.id]) }).tag(item.id)
+                    .contextMenu {
+                        if let out = item.outputs.first {
+                            Button("Show Result in Finder") { NSWorkspace.shared.activateFileViewerSelecting(item.outputs) }
+                            Button("Open Result") { NSWorkspace.shared.open(out) }
+                            Divider()
+                        }
+                        Button("Show Original in Finder") { item.url.reveal() }
+                        Button("Remove from List") { run.remove([item.id]) }.disabled(run.running)
+                    }
+            }
+        }
+        .onDeleteCommand { if let id = run.selection { run.remove([id]) } }
     }
 
     private var emptyState: some View {
@@ -369,7 +388,7 @@ struct BatchToolView<Options: View, Preview: View>: View {
                     run.start(folderName: folderName, concurrency: concurrency, process: process)
                 } label: {
                     // "Remove Background from" reads oddly on its own, so drop the dangling word when empty.
-                    Text(run.items.isEmpty ? verb.replacingOccurrences(of: #" (from|in)$"#, with: "", options: .regularExpression)
+                    Text(run.items.isEmpty ? verb.replacingOccurrences(of: #" (from|in|into|of)$"#, with: "", options: .regularExpression)
                                            : "\(verb) \(run.items.count) \(plural(run.items.count))")
                         .frame(maxWidth: .infinity)
                 }
@@ -385,10 +404,11 @@ struct BatchToolView<Options: View, Preview: View>: View {
 
 extension BatchToolView where Preview == EmptyView {
     init(toolID: String, folderName: String, types: [UTType], noun: String, verb: String, concurrency: Int = 2,
+         previewKey: String? = nil, previewStart: ((URL) async -> Double?)? = nil,
          @ViewBuilder options: @escaping () -> Options,
          process: @escaping @MainActor (URL, URL, @escaping @MainActor (Double) -> Void) async throws -> BatchOutput) {
         self.init(toolID: toolID, folderName: folderName, types: types, noun: noun, verb: verb, concurrency: concurrency,
-                  options: options, preview: { _ in EmptyView() }, process: process)
+                  previewKey: previewKey, previewStart: previewStart, options: options, preview: { _ in EmptyView() }, process: process)
     }
 }
 
