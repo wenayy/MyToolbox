@@ -673,74 +673,6 @@ struct BatteryView: View {
     }
 }
 
-// MARK: - Keep Awake
-
-@MainActor @Observable
-final class KeepAwake {
-    static let shared = KeepAwake()
-    private(set) var until: Date?
-    private(set) var active = false
-    var keepDisplayOn = true
-    @ObservationIgnored private var assertion: IOPMAssertionID = 0
-    @ObservationIgnored private var timer: Task<Void, Never>?
-
-    /// minutes = nil keeps it on until turned off.
-    func start(minutes: Int?) {
-        stop()
-        let type = (keepDisplayOn ? kIOPMAssertPreventUserIdleDisplaySleep : kIOPMAssertPreventUserIdleSystemSleep) as CFString
-        guard IOPMAssertionCreateWithName(type, IOPMAssertionLevel(kIOPMAssertionLevelOn), "MyToolbox Keep Awake" as CFString, &assertion) == kIOReturnSuccess else { return }
-        active = true
-        if let minutes {
-            until = Date().addingTimeInterval(Double(minutes) * 60)
-            timer = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(Double(minutes) * 60))
-                if !Task.isCancelled { self?.stop() }
-            }
-        }
-    }
-
-    func stop() {
-        timer?.cancel()
-        if assertion != 0 { IOPMAssertionRelease(assertion); assertion = 0 }
-        active = false
-        until = nil
-    }
-}
-
-struct KeepAwakeView: View {
-    @Bindable private var awake = KeepAwake.shared
-    private let choices: [(String, Int?)] = [("15 minutes", 15), ("30 minutes", 30), ("1 hour", 60), ("2 hours", 120), ("5 hours", 300), ("Until I turn it off", nil)]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 14) {
-                Image(systemName: awake.active ? "cup.and.saucer.fill" : "cup.and.saucer").font(.system(size: 40)).foregroundStyle(awake.active ? .orange : .secondary)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(awake.active ? "Your Mac is staying awake" : "Your Mac sleeps normally").font(.title2.weight(.semibold))
-                    if let until = awake.until {
-                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                            Text("Until \(until.formatted(date: .omitted, time: .shortened)) · \(timecode(max(0, until.timeIntervalSince(ctx.date)))) left").foregroundStyle(.secondary)
-                        }
-                    } else if awake.active {
-                        Text("Until you turn it off").foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                if awake.active { Button("Turn Off") { awake.stop() }.controlSize(.large) }
-            }
-            Toggle("Keep the display on too", isOn: $awake.keepDisplayOn).disabled(awake.active)
-            Text("Keep awake for").font(.headline)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 10)], spacing: 10) {
-                ForEach(choices, id: \.0) { label, minutes in
-                    Button { awake.start(minutes: minutes) } label: { Text(label).frame(maxWidth: .infinity) }.controlSize(.large)
-                }
-            }
-            Text("Also in the menu bar icon. Closing the lid still sleeps the Mac unless it's plugged into a display.").font(.caption).foregroundStyle(.secondary)
-            Spacer()
-        }
-    }
-}
-
 // MARK: - Uninstall App
 
 @MainActor @Observable
@@ -914,7 +846,7 @@ final class PresentationMode {
             d.set(await MacKit.defaults(["read", "com.apple.dock", "autohide"]), forKey: "presentation.prevDock")
             if hideIcons { _ = await MacKit.defaults(["write", "com.apple.finder", "CreateDesktop", "-bool", "false"]); _ = try? await Shell.run("/usr/bin/killall", ["Finder"]) }
             if hideDock { _ = await MacKit.defaults(["write", "com.apple.dock", "autohide", "-bool", "true"]); _ = try? await Shell.run("/usr/bin/killall", ["Dock"]) }
-            if stayAwake { KeepAwake.shared.start(minutes: nil) }
+            if stayAwake { KeepAwake.shared.start(.indefinitely) }
         } else {
             let icons = d.string(forKey: "presentation.prevIcons") ?? ""
             let dock = d.string(forKey: "presentation.prevDock") ?? ""

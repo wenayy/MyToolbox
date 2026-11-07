@@ -93,10 +93,10 @@ enum RecordingFormat: String, CaseIterable, Identifiable {
 }
 
 @MainActor @Observable
-final class RecorderModel: NSObject, AVAudioRecorderDelegate {
+final class RecorderModel {
     static let shared = RecorderModel()
 
-    enum State { case idle, recording, paused }
+    enum State { case idle, starting, recording, paused }
 
     struct Recording: Identifiable {
         var id: URL { url }
@@ -113,21 +113,12 @@ final class RecorderModel: NSObject, AVAudioRecorderDelegate {
     var recordings: [Recording] = []
     var error: String?
     var playing: URL?
-    @ObservationIgnored private var recorder: AVAudioRecorder?
+    var inputs: [AudioInput] = []
+    @ObservationIgnored private var recorder: MicRecorder?
     @ObservationIgnored private var player: AVAudioPlayer?
     @ObservationIgnored private var timer: Timer?
 
-    static func settings(_ format: RecordingFormat, stereo: Bool) -> [String: Any] {
-        let channels = stereo ? 2 : 1
-        switch format {
-        case .m4a:
-            return [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: channels,
-                    AVEncoderBitRateKey: stereo ? 192_000 : 96_000, AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue]
-        case .wav:
-            return [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: channels,
-                    AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false]
-        }
-    }
+    func loadInputs() { inputs = AudioInputs.all() }
 
     /// Recordings already in the output folder, newest first.
     func loadExisting() {
@@ -143,62 +134,56 @@ final class RecorderModel: NSObject, AVAudioRecorderDelegate {
             .sorted { $0.url.lastPathComponent > $1.url.lastPathComponent }
     }
 
-    func start(format: RecordingFormat, stereo: Bool) {
+    /// `then`: what to do with the finished file (transcribe it, for instance).
+    func start(format: RecordingFormat, options: MicRecorder.Options, then: ((URL) -> Void)? = nil) {
+        guard state == .idle else { return }
         error = nil
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized: break
-        case .notDetermined:
-            Task {
-                if await AVCaptureDevice.requestAccess(for: .audio) { start(format: format, stereo: stereo) }
-                else { error = "MyToolbox can't use the microphone. Allow it in System Settings → Privacy & Security → Microphone." }
-            }
-            return
-        default:
-            error = "MyToolbox can't use the microphone. Allow it in System Settings → Privacy & Security → Microphone."
-            return
-        }
+        state = .starting
         stopPlayback()
-        let stamp = Date().formatted(.verbatim("\(year: .defaultDigits)-\(month: .twoDigits)-\(day: .twoDigits) at \(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)).\(minute: .twoDigits).\(second: .twoDigits)",
-                                               timeZone: .current, calendar: .current))
-        let url = Output.file(name: "Recording \(stamp)", ext: format.ext)
-        do {
-            let r = try AVAudioRecorder(url: url, settings: Self.settings(format, stereo: stereo))
-            r.delegate = self
-            r.isMeteringEnabled = true
-            guard r.record() else { throw ToolError("The microphone couldn't start. Check the input in System Settings → Sound.") }
-            recorder = r
-            state = .recording
-            elapsed = 0
-            timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.tick() }
+        Task {
+            guard await AudioInputs.requestAccess() else { error = AudioInputs.deniedMessage; state = .idle; return }
+            let url = Output.file(name: "Recording \(Output.stamp())", ext: format.ext)
+            do {
+                let r = try MicRecorder(url: url, options: options)
+                r.onLevel = { [weak self] in self?.level = $0 }
+                try r.start()
+                recorder = r
+                finished = then
+                state = .recording
+                elapsed = 0
+                timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.elapsed = self?.recorder?.duration ?? 0 }
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: url)
+                self.error = "The microphone couldn't start: \(error.localizedDescription)"
+                state = .idle
             }
-        } catch {
-            self.error = error.localizedDescription
         }
     }
 
-    private func tick() {
-        guard let r = recorder else { return }
-        r.updateMeters()
-        elapsed = r.currentTime
-        // −50 dB…0 dB → 0…1
-        level = max(0, min(1, (r.averagePower(forChannel: 0) + 50) / 50))
-    }
+    @ObservationIgnored private var finished: ((URL) -> Void)?
 
     func pauseResume() {
         guard let r = recorder else { return }
-        if state == .recording { r.pause(); state = .paused } else if state == .paused { r.record(); state = .recording }
+        if state == .recording { r.setPaused(true); state = .paused } else if state == .paused { r.setPaused(false); state = .recording }
     }
 
     func stop() {
         guard let r = recorder else { return }
-        let duration = r.currentTime
-        r.stop()
+        let duration = r.stop()
         timer?.invalidate(); timer = nil
         recorder = nil
         state = .idle
         level = 0
+        guard duration > 0.05 else {
+            try? FileManager.default.removeItem(at: r.url)
+            error = "Nothing was recorded. Check that the right microphone is chosen."
+            return
+        }
         recordings.insert(Recording(url: r.url, duration: duration), at: 0)
+        finished?(r.url)
+        finished = nil
     }
 
     func play(_ url: URL) {
@@ -238,13 +223,6 @@ final class RecorderModel: NSObject, AVAudioRecorderDelegate {
     private func update(_ url: URL, _ change: (inout Recording) -> Void) {
         if let i = recordings.firstIndex(where: { $0.url == url }) { change(&recordings[i]) }
     }
-
-    nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
-        Task { @MainActor in
-            self.error = error?.localizedDescription ?? "Recording stopped because of an error."
-            self.stop()
-        }
-    }
 }
 
 struct RecordAudioView: View {
@@ -252,24 +230,43 @@ struct RecordAudioView: View {
     @Bindable private var speech = TranscribeModel.shared
     @AppStorage("rec.format") private var format: RecordingFormat = .m4a
     @AppStorage("rec.stereo") private var stereo = false
+    @AppStorage("rec.device") private var device = ""
+    @AppStorage("rec.voice") private var reduceNoise = true
+    @AppStorage("rec.autoTranscribe") private var autoTranscribe = false
     @State private var showing: URL?
+
+    private var locale: Locale { speech.localeID.isEmpty ? Locale.current : Locale(identifier: speech.localeID) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 16) {
-                Picker("Format", selection: $format) { ForEach(RecordingFormat.allCases) { Text($0.rawValue).tag($0) } }.fixedSize()
-                Picker("Channels", selection: $stereo) { Text("Mono").tag(false); Text("Stereo").tag(true) }.fixedSize()
-                Spacer()
-                Picker("Transcribe in", selection: $speech.localeID) {
-                    ForEach(speech.locales, id: \.identifier) { Text(speech.name($0)).tag($0.identifier) }
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 16) {
+                    MicrophonePicker(selection: $device, inputs: model.inputs)
+                    Picker("Format", selection: $format) { ForEach(RecordingFormat.allCases) { Text($0.rawValue).tag($0) } }.fixedSize()
+                    Picker("Channels", selection: $stereo) { Text("Mono").tag(false); Text("Stereo").tag(true) }.fixedSize()
+                    Spacer()
                 }
-                .frame(maxWidth: 260)
+                HStack(spacing: 16) {
+                    NoiseReductionToggle(isOn: $reduceNoise)
+                    Toggle("Transcribe when I stop", isOn: $autoTranscribe)
+                    Spacer()
+                    Picker("Language", selection: $speech.localeID) {
+                        ForEach(speech.locales, id: \.identifier) { Text(speech.name($0)).tag($0.identifier) }
+                    }
+                    .frame(maxWidth: 260)
+                }
             }
             .disabled(model.state != .idle)
 
             HStack(spacing: 20) {
                 Button {
-                    model.state == .idle ? model.start(format: format, stereo: stereo) : model.stop()
+                    if model.state == .idle {
+                        let lang = locale
+                        model.start(format: format, options: .init(voiceProcessing: reduceNoise, stereo: stereo, deviceUID: device.isEmpty ? nil : device),
+                                    then: autoTranscribe ? { [model] url in model.transcribe(url, locale: lang) } : nil)
+                    } else {
+                        model.stop()
+                    }
                 } label: {
                     ZStack {
                         Circle().fill(.red.opacity(0.15)).frame(width: 72, height: 72)
@@ -288,10 +285,12 @@ struct RecordAudioView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(Self.clock(model.elapsed)).font(.system(size: 32, weight: .medium).monospacedDigit())
                     LevelMeter(level: model.level).frame(width: 260, height: 8)
-                    Text(model.state == .idle ? "Ready" : model.state == .paused ? "Paused" : "Recording…").foregroundStyle(.secondary)
+                    Text(model.state == .idle ? "Ready" : model.state == .starting ? "Starting…" : model.state == .paused ? "Paused" : "Recording…")
+                        .foregroundStyle(.secondary)
                 }
-                if model.state != .idle {
+                if model.state == .recording || model.state == .paused {
                     Button(model.state == .paused ? "Resume" : "Pause") { model.pauseResume() }.keyboardShortcut("p")
+                    if reduceNoise { MicModeButton() }
                 }
                 Spacer()
             }
@@ -307,7 +306,7 @@ struct RecordAudioView: View {
             }
             SavesToLine()
         }
-        .task { await speech.loadLocales(); model.loadExisting() }
+        .task { model.loadInputs(); await speech.loadLocales(); model.loadExisting() }
         .sheet(item: $showing) { PreviewSheet(url: $0) }
     }
 
@@ -346,6 +345,37 @@ struct RecordAudioView: View {
             Button("Open") { NSWorkspace.shared.open(r.url) }
             Button("Show in Finder") { r.url.reveal() }
         }
+    }
+}
+
+/// Chooses which microphone to record; empty = the one set in System Settings.
+struct MicrophonePicker: View {
+    @Binding var selection: String
+    let inputs: [AudioInput]
+
+    var body: some View {
+        Picker("Microphone", selection: $selection) {
+            Text("System Default").tag("")
+            ForEach(inputs) { Text($0.name).tag($0.id) }
+            if !selection.isEmpty && !inputs.contains(where: { $0.id == selection }) { Text("Not connected").tag(selection) }
+        }
+        .frame(maxWidth: 300)
+    }
+}
+
+struct NoiseReductionToggle: View {
+    @Binding var isOn: Bool
+    var body: some View {
+        Toggle("Reduce background noise", isOn: $isOn)
+            .help("Uses Apple's voice processing: keeps your voice and removes steady background noise, room echo and the sound your Mac is playing. For the strongest effect, choose Voice Isolation in Mic Mode while recording.")
+    }
+}
+
+/// Opens macOS's Mic Mode menu (Standard / Voice Isolation / Wide Spectrum) for the running recording.
+struct MicModeButton: View {
+    var body: some View {
+        Button { AVCaptureDevice.showSystemUserInterface(.microphoneModes) } label: { Label("Mic Mode…", systemImage: "waveform.badge.mic") }
+            .help("Choose Voice Isolation to keep only your voice, or Standard. macOS applies it to this recording.")
     }
 }
 

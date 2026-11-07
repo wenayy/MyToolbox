@@ -27,7 +27,7 @@ struct MyToolboxApp: App {
             Button("Capture Text  ⌃⌥T") { CaptureText.run(showResult: false) }
             Button("Pick Color") { AppModel.shared.open("colorpicker") }
             Button(KeepAwake.shared.active ? "Stop Keeping Awake" : "Keep Awake for 1 Hour") {
-                if KeepAwake.shared.active { KeepAwake.shared.stop() } else { KeepAwake.shared.start(minutes: 60) }
+                if KeepAwake.shared.active { KeepAwake.shared.stop() } else { KeepAwake.shared.start(.forTime(3600)) }
             }
             Divider()
             Button("Saved Files") { AppModel.shared.open(AppModel.saved) }

@@ -558,7 +558,7 @@ check(Displays.screens().contains { $0.builtIn } ? Displays.builtInBrightness(Di
 wait {
     let battery = await BatteryInfo.read()
     check(battery == nil || battery?.cycles != nil, "battery health read (cycles \(battery?.cycles.map(String.init) ?? "n/a"), max \(battery?.maxCapacity ?? "n/a"))")
-    KeepAwake.shared.start(minutes: 1)
+    KeepAwake.shared.start(.forTime(60))
     let assertions = (try? await Shell.run("/usr/bin/pmset", ["-g", "assertions"]))?.out ?? ""
     check(assertions.contains("MyToolbox Keep Awake"), "keep awake holds a power assertion")
     KeepAwake.shared.stop()

@@ -37,6 +37,12 @@ enum Output {
         }
     }
 
+    /// "2026-11-07 at 22.16.09", for recordings.
+    static func stamp(_ date: Date = Date()) -> String {
+        date.formatted(.verbatim("\(year: .defaultDigits)-\(month: .twoDigits)-\(day: .twoDigits) at \(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)).\(minute: .twoDigits).\(second: .twoDigits)",
+                                 timeZone: .current, calendar: .current))
+    }
+
     /// Display form for the "Saves to" line.
     static var rootDisplay: String {
         root.path(percentEncoded: false).replacingOccurrences(of: NSHomeDirectory(), with: "~")

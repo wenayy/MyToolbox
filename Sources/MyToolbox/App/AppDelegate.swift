@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HotKeys.register(key: kVK_Space, modifiers: controlKey | optionKey) { QuickOpenPanel.shared.toggle() }
         HotKeys.register(key: kVK_ANSI_T, modifiers: controlKey | optionKey) { CaptureText.run(showResult: false) }
         MouseFixer.shared.update()   // restore mouse-wheel fixes from last time
+        DownloadsWatcher.shared.restore()   // keep sorting downloads if that was left on
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {

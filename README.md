@@ -83,7 +83,7 @@ Tested with ffmpeg 8.1 and 9.0, yt-dlp 2026.10.26.
 | Mute Video | Remove the sound without re-encoding |
 | Extract Frames | Stills every N seconds, evenly spaced, or one moment — PNG, JPEG or HEIC at original, 1080p or 720p |
 | Media Info | Codec, resolution, frame rate, bitrate, HDR, device and location; copy as text or export JSON |
-| Record Screen | Record a display, a window or an area, with system audio and microphone, at 30 or 60 fps |
+| Record Screen | Record a display, a window or an area at 30 or 60 fps, with system audio and your microphone — with background noise and echo removed from your voice if you like — a countdown, and a microphone picker |
 
 </details>
 
@@ -92,7 +92,7 @@ Tested with ffmpeg 8.1 and 9.0, yt-dlp 2026.10.26.
 
 | Tool | What it does |
 |---|---|
-| Record Audio | Record your voice in M4A or WAV, mono or stereo, then transcribe it on device |
+| Record Audio | Record your voice in M4A or WAV from any microphone, with background noise removed, and transcribe it on device — automatically when you stop, if you like |
 | Trim Audio | Cut a song or recording down, with fade in and fade out, keeping its format |
 | Clean Up Audio | Reduce background noise, rumble and hiss in recordings and videos, even out loudness, remove silences |
 | Extract Audio | Save the soundtrack of a video as M4A, MP3 or WAV |
@@ -177,7 +177,7 @@ Tested with ffmpeg 8.1 and 9.0, yt-dlp 2026.10.26.
 | Batch Rename | Rename many files at once with find and replace, numbering, dates or case changes |
 | Find Duplicates | Find identical files across folders and move the extras to the Trash |
 | Zip & Unzip | Open ZIP, RAR, 7z and TAR files, or make a ZIP, with a password if you like |
-| Organize Downloads | Sort downloaded images by the site they came from (X, Instagram, Pinterest…) into folders or Photos albums |
+| Organize Downloads | Sort Downloads (or any folder) into Screenshots, Images, Videos, Audio, PDFs, Documents, Spreadsheets, Presentations, Archives and Installers — or images by the site they came from — by hand or automatically as files arrive, with Undo |
 
 </details>
 
@@ -190,7 +190,7 @@ Tested with ffmpeg 8.1 and 9.0, yt-dlp 2026.10.26.
 | Storage Explorer | See what's filling your disk, find the usual space hogs and clear them out safely |
 | Wi-Fi Password & QR | Show the password of a saved Wi-Fi network and make a QR code guests can scan to join |
 | Battery Health | See battery capacity, cycle count and charger, plus AirPods and accessory levels |
-| Keep Awake | Stop your Mac from sleeping during downloads, renders or talks, for as long as you choose |
+| Keep Awake | Stop your Mac from sleeping for a set time, until you've been away a while, until a time of day, or while an app is open |
 | Uninstall App | Remove an app together with the caches, preferences and data it leaves behind |
 | Presentation Mode | One switch before you share your screen: hide desktop icons, hide the Dock and stay awake |
 | Clean Keyboard | Pause the keyboard so you can wipe the keys, with an optional black screen for the display |

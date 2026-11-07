@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 APP="$ROOT/build/MyToolbox.app"
-VERSION="1.1.0"
+VERSION="1.2.0"
 BUILD_NUM=$(date +%Y%m%d%H%M)
 
 mkdir -p "$ROOT/.build"

@@ -592,8 +592,9 @@ wait(600) {
     check(src("tweet.png") == "X" && src("pin.png") == "Pinterest" && src("blog.png") == "example.com" && src("mystery.png") == nil,
           "organize downloads reads Where From: \(src("tweet.png") ?? "-"), \(src("pin.png") ?? "-"), \(src("blog.png") ?? "-"), \(src("mystery.png") ?? "none")")
     do {
-        let found = try OrganizeModel.images(in: dl, rules: rules)
-        try OrganizeModel.move(found.map { ($0.url, $0.source ?? "Unknown") }, into: dl)
+        let found = try OrganizeModel.items(in: dl, rules: rules)
+        let plan = found.compactMap { i in Organizer.destination(i, by: .site, includeRest: true).map { (i.url, $0) } }
+        _ = try Organizer.move(plan, into: dl)
     } catch { check(false, "organize downloads: \(error.localizedDescription)") }
     let made = Set(((try? FileManager.default.contentsOfDirectory(atPath: dl.path)) ?? []))
     check(made.isSuperset(of: ["X", "Pinterest", "example.com", "Unknown"]) && !made.contains("tweet.png"), "organize downloads moves into folders: \(made.sorted())")
@@ -712,6 +713,189 @@ wait(900) {
           && ToolRegistry.tool("cleanaudio")!.accepts(opus), "MKV and Opus files are taken by video and audio tools")
     check(FrameExtractor.times(mode: .every, duration: 4, interval: 1, count: 0, at: 0) == [0, 1, 2, 3]
           && FrameExtractor.times(mode: .evenly, duration: 4, interval: 0, count: 2, at: 0) == [1, 3], "frame tiles show the right moments")
+}
+
+// MARK: - Organize by kind, automatic sorting, Keep Awake, recording (1.2)
+
+@MainActor func until(_ timeout: Double, _ cond: () -> Bool) async -> Bool {
+    let end = Date().addingTimeInterval(timeout)
+    while !cond() && Date() < end { try? await Task.sleep(for: .milliseconds(100)) }
+    return cond()
+}
+func setPlistXattr(_ url: URL, _ name: String, _ value: Any) {
+    guard let data = try? PropertyListSerialization.data(fromPropertyList: value, format: .binary, options: 0) else { return }
+    _ = data.withUnsafeBytes { setxattr(url.path, name, $0.baseAddress, data.count, 0, 0) }
+}
+
+wait(600) {
+    // Kinds.
+    let kinds = root.appendingPathComponent("kinds")
+    try? FileManager.default.createDirectory(at: kinds, withIntermediateDirectories: true)
+    func touch(_ name: String, bytes: Int = 10) -> URL {
+        let u = kinds.appendingPathComponent(name)
+        try? Data(repeating: 65, count: bytes).write(to: u)
+        return u
+    }
+    let marked = touch("IMG_2044.png")
+    setPlistXattr(marked, "com.apple.metadata:kMDItemIsScreenCapture", true)
+    let expect: [(String, FileKind)] = [
+        ("Screenshot 2026-11-07 at 10.00.00.png", .screenshots), ("IMG_2044.png", .screenshots), ("holiday.jpg", .images), ("live.heic", .images),
+        ("clip.mp4", .videos), ("show.mkv", .videos), ("Screen Recording 2026-11-07.mov", .videos), ("song.mp3", .audio), ("voice.opus", .audio),
+        ("invoice.pdf", .pdfs), ("letter.docx", .documents), ("notes.txt", .documents), ("essay.pages", .documents), ("budget.xlsx", .spreadsheets),
+        ("data.csv", .spreadsheets), ("deck.pptx", .presentations), ("talk.key", .presentations), ("photos.zip", .archives), ("src.tar.gz", .archives),
+        ("bundle.7z", .archives), ("App.dmg", .installers), ("Setup.pkg", .installers), ("thing.xyz", .other),
+    ]
+    let wrong = expect.filter { name, kind in
+        let u = name == "IMG_2044.png" ? marked : touch(name)
+        return FileKind.of(u) != kind
+    }
+    // Files whose names don't say what they are are recognised by their contents.
+    func copyAs(_ src: URL, _ name: String) -> URL { let u = kinds.appendingPathComponent(name); try? FileManager.default.copyItem(at: src, to: u); return u }
+    let sniffed: [(URL, FileKind)] = [(copyAs(photo, "1ab329ee-fc5b-4f00"), .images), (copyAs(logo, "3bGWo_19.jpg_small"), .images),
+                                      (copyAs(clip, "download"), .videos), (copyAs(vertical, "vid-noext"), .videos), (copyAs(mp3, "track"), .audio),
+                                      (copyAs(flac, "lossless-noext"), .audio), (copyAs(report, "statement"), .pdfs), (copyAs(docx, "contract-noext"), .archives),
+                                      (copyAs(heic, "IMG_9"), .images), (touch("mystery-noext"), .other)]
+    let missed = sniffed.filter { FileKind.of($0.0) != $0.1 }.map { "\($0.0.lastPathComponent)→\(FileKind.of($0.0).rawValue)" }
+    check(missed.isEmpty, "files without a telling name are sorted by their contents \(missed)")
+    check(wrong.isEmpty, "organize sorts \(expect.count) kinds of file correctly \(wrong.map { "\($0.0)→\(FileKind.of(kinds.appendingPathComponent($0.0)).rawValue)" })")
+
+    // What counts as a finished file.
+    let dl = root.appendingPathComponent("dl2")
+    try? FileManager.default.createDirectory(at: dl.appendingPathComponent("Old folder"), withIntermediateDirectories: true)
+    func put(_ name: String, bytes: Int = 10) { try? Data(repeating: 66, count: bytes).write(to: dl.appendingPathComponent(name)) }
+    put("done.pdf"); put("half.mp4.crdownload"); put("film.mkv", bytes: 0); put("film.mkv.part"); put(".hidden.png"); put("empty.txt", bytes: 0)
+    put("Report.pdf")
+    try? FileManager.default.createDirectory(at: dl.appendingPathComponent("Safari.zip.download"), withIntermediateDirectories: true)
+    let names = (try? Organizer.candidates(in: dl).map(\.lastPathComponent)) ?? []
+    check(names == ["done.pdf", "Report.pdf"], "only finished, visible files are sorted: \(names)")
+    check(((try? Organizer.candidates(in: dl, settle: 60)) ?? [dl]).isEmpty, "files written moments ago wait until they settle")
+
+    // Move, collisions and Undo.
+    try? FileManager.default.createDirectory(at: dl.appendingPathComponent("PDFs"), withIntermediateDirectories: true)
+    try? Data("old".utf8).write(to: dl.appendingPathComponent("PDFs/done.pdf"))
+    let items = (try? OrganizeModel.items(in: dl, rules: DownloadSources.defaults)) ?? []
+    let plan = items.compactMap { i in Organizer.destination(i, by: .kind, includeRest: false).map { (i.url, $0) } }
+    let moves = (try? Organizer.move(plan, into: dl)) ?? []
+    let fm = FileManager.default
+    check(moves.count == 2 && fm.fileExists(atPath: dl.appendingPathComponent("PDFs/done 2.pdf").path)
+          && (try? String(contentsOf: dl.appendingPathComponent("PDFs/done.pdf"), encoding: .utf8)) == "old",
+          "organize never overwrites: \(moves.map(\.to.lastPathComponent))")
+    check(Organizer.undo(moves) == 2 && fm.fileExists(atPath: dl.appendingPathComponent("done.pdf").path)
+          && fm.fileExists(atPath: dl.appendingPathComponent("Report.pdf").path), "Undo puts files back")
+
+    // Automatic sorting on a live folder.
+    let watched = root.appendingPathComponent("watched")
+    try? fm.createDirectory(at: watched, withIntermediateDirectories: true)
+    defaults.set(OrganizeBy.kind.rawValue, forKey: "organize.by"); defaults.set(false, forKey: "organize.unknown")
+    let watcher = DownloadsWatcher.shared
+    watcher.settle = 0.5
+    watcher.start(watched)
+    try? Data(repeating: 1, count: 100).write(to: watched.appendingPathComponent("invoice.pdf"))
+    let pdfMoved = await until(10) { fm.fileExists(atPath: watched.appendingPathComponent("PDFs/invoice.pdf").path) }
+    check(pdfMoved, "a new download is sorted automatically (invoice.pdf → PDFs)")
+    try? Data(repeating: 1, count: 100).write(to: watched.appendingPathComponent("movie.mp4.crdownload"))
+    try? Data(repeating: 1, count: 100).write(to: watched.appendingPathComponent("thing.xyz"))
+    try? await Task.sleep(for: .seconds(3))
+    check(fm.fileExists(atPath: watched.appendingPathComponent("movie.mp4.crdownload").path) && fm.fileExists(atPath: watched.appendingPathComponent("thing.xyz").path),
+          "downloads in progress and unknown files are left alone")
+    try? fm.moveItem(at: watched.appendingPathComponent("movie.mp4.crdownload"), to: watched.appendingPathComponent("movie.mp4"))
+    let movieMoved = await until(10) { fm.fileExists(atPath: watched.appendingPathComponent("Videos/movie.mp4").path) }
+    check(movieMoved, "a finished download is sorted once its name is final (movie.mp4 → Videos)")
+    let shot = watched.appendingPathComponent("Screenshot 2026-11-07 at 22.00.00.png")
+    try! ImageKit.save(draw(40, 30) { c in c.setFillColor(.black); c.fill(CGRect(x: 0, y: 0, width: 40, height: 30)) }, to: shot, format: .png)
+    let shotMoved = await until(10) { fm.fileExists(atPath: watched.appendingPathComponent("Screenshots/Screenshot 2026-11-07 at 22.00.00.png").path) }
+    check(shotMoved, "screenshots go to Screenshots")
+    watcher.stop()
+    watcher.settle = 3
+
+    // Keep Awake.
+    let k = KeepAwake.shared
+    check(KeepAwake.shouldEnd(.forTime(60), deadline: Date().addingTimeInterval(10), idle: 0, appRunning: true, now: Date()) == false
+          && KeepAwake.shouldEnd(.forTime(60), deadline: Date().addingTimeInterval(-1), idle: 0, appRunning: true, now: Date())
+          && KeepAwake.shouldEnd(.untilAway(900), deadline: nil, idle: 899, appRunning: true, now: Date()) == false
+          && KeepAwake.shouldEnd(.untilAway(900), deadline: nil, idle: 900, appRunning: true, now: Date())
+          && KeepAwake.shouldEnd(.whileAppOpen(bundleID: "x", name: "X"), deadline: nil, idle: 0, appRunning: false, now: Date())
+          && KeepAwake.shouldEnd(.indefinitely, deadline: nil, idle: 99_999, appRunning: false, now: Date()) == false,
+          "Keep Awake ends only when its condition is met")
+    func assertionHeld() -> Bool { sh("/usr/bin/pmset", ["-g", "assertions"]).1.contains(KeepAwake.assertionName) }
+    k.start(.forTime(3))
+    check(k.active && assertionHeld(), "Keep Awake holds a power assertion while on")
+    k.extend(by: 2)
+    let deadlineLeft = k.deadline.map { $0.timeIntervalSinceNow } ?? 0
+    check(deadlineLeft > 3.5 && deadlineLeft < 5.5, "+15-style extension moves the end (\(String(format: "%.1f", deadlineLeft)) s left)")
+    let ended = await until(10) { !k.active }
+    check(ended && !assertionHeld(), "a timed session ends by itself and lets the Mac sleep normally again")
+    var fakeIdle = 0.0
+    k.idleSeconds = { fakeIdle }
+    k.start(.untilAway(60))
+    k.check()
+    check(k.active, "until-away keeps going while the Mac is in use")
+    fakeIdle = 61
+    k.check()
+    check(!k.active && !assertionHeld(), "until-away ends once nobody has used the Mac for the chosen time")
+    var appOpen = true
+    k.appIsRunning = { _ in appOpen }
+    k.start(.whileAppOpen(bundleID: "com.example.render", name: "Render"))
+    k.check()
+    let stillOn = k.active
+    appOpen = false
+    k.check()
+    check(stillOn && !k.active, "while-app-open ends when the app quits")
+    k.idleSeconds = KeepAwake.systemIdleSeconds
+    k.appIsRunning = { !NSRunningApplication.runningApplications(withBundleIdentifier: $0).isEmpty }
+    check(KeepAwake.systemIdleSeconds() >= 0, "reads how long the Mac has been idle")
+
+    // Recording plumbing (the microphone itself needs a person and permission).
+    // Voice processing hands over several channels with a layout, as here.
+    let fmt3 = AVAudioFormat(standardFormatWithSampleRate: 48_000, channelLayout: AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 3)!)
+    let src = AVAudioPCMBuffer(pcmFormat: fmt3, frameCapacity: 4)!
+    src.frameLength = 4
+    for ch in 0..<3 { for i in 0..<4 { src.floatChannelData![ch][i] = Float(ch + 1) } }
+    let stereo = AVAudioPCMBuffer(pcmFormat: AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 2, interleaved: false)!, frameCapacity: 4)!
+    MicRecorder.copyChannels(from: src, to: stereo, voiceOnly: true)
+    let voiceBoth = stereo.floatChannelData![0][0] == 1 && stereo.floatChannelData![1][0] == 1
+    MicRecorder.copyChannels(from: src, to: stereo, voiceOnly: false)
+    check(voiceBoth && stereo.floatChannelData![0][0] == 1 && stereo.floatChannelData![1][0] == 2, "microphone channels are routed right (voice on both sides with noise reduction)")
+    check(MicRecorder.level(src) == 1, "level meter reads full scale")
+    check((MicRecorder.settings(for: "m4a", sampleRate: 96_000, channels: 1)[AVSampleRateKey] as? Double) == 48_000, "AAC recordings stay at 48 kHz with 96 kHz mics")
+    check(AudioInputs.deviceID(forUID: "no-such-microphone") == nil, "an unplugged microphone is reported as missing")
+    _ = AudioInputs.all()
+
+    // Real microphone recordings, only when this Mac already allows it (never prompts). Deleted right after.
+    if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized {
+        for (vp, ext, stereo, delayed) in [(false, "m4a", false, false), (true, "m4a", false, false), (true, "wav", true, false), (true, "caf", false, true)] {
+            let u = root.appendingPathComponent("mic test \(vp) \(stereo).\(ext)")
+            do {
+                let r = try MicRecorder(url: u, options: .init(voiceProcessing: vp, stereo: stereo), writeImmediately: !delayed)
+                var levels = 0
+                r.onLevel = { _ in levels += 1 }
+                try r.start()
+                if delayed { try? await Task.sleep(for: .seconds(0.5)); r.beginWriting() }
+                try? await Task.sleep(for: .seconds(1.5))
+                let d = r.stop()
+                let p = probe(u)
+                check(d > 1.2 && d < 1.8 && near(p.duration, d, 0.15) && levels > 5,
+                      "records the microphone (\(vp ? "noise reduction" : "plain"), \(ext)\(stereo ? ", stereo" : "")\(delayed ? ", started with the video" : "")): \(String(format: "%.2f", d)) s, \(p.audio ?? "no audio")")
+            } catch { check(false, "microphone recording (\(vp)): \(error.localizedDescription)") }
+            try? FileManager.default.removeItem(at: u)
+        }
+    } else {
+        print("· microphone not allowed for this process — live recording not tested")
+    }
+
+    let micFile = root.appendingPathComponent("mic.caf")
+    sh(ff, ["-hide_banner", "-loglevel", "error", "-y", "-i", speech.path, "-c:a", "pcm_f32le", micFile.path])
+    for (name, source) in [("with system audio", clip), ("silent screen", silent)] {
+        let screen = root.appendingPathComponent("Screen Recording \(name).mov")
+        try? fm.removeItem(at: screen)
+        try? fm.copyItem(at: source, to: screen)
+        do {
+            try await ScreenRecorder.mixMicrophone(into: screen, mic: micFile)
+            let p = probe(screen), q = probe(source)
+            check(p.audio == "aac" && p.video == q.video && near(p.duration, q.duration, 0.15),
+                  "voice is mixed into the screen recording (\(name)): \(p.video ?? "-")/\(p.audio ?? "-") \(String(format: "%.2f", p.duration)) s")
+        } catch { check(false, "voice mix (\(name)): \(error.localizedDescription)") }
+    }
 }
 
 // MARK: - Every tool opens
