@@ -7,16 +7,33 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 APP="$ROOT/build/MyToolbox.app"
-VERSION="1.0.0"
+VERSION="1.0.1"
 BUILD_NUM=$(date +%Y%m%d%H%M)
 
 mkdir -p "$ROOT/.build"
+
+# Command Line Tools 27 make SwiftUI's @State a macro in the macOS 27 SDK but ship its plugin only with Xcode,
+# so without Xcode the build fails with "plugin for module 'SwiftUIMacros' not found". They also ship the
+# macOS 26 SDK, which needs no plugin: fall back to the newest one of those.
+older_sdk() {
+  ls -d "$(xcode-select -p)"/SDKs/MacOSX26*.sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26*.sdk 2>/dev/null \
+    | grep -v '/MacOSX26.sdk$' | sort -V | tail -1
+}
+
 for ARCH in arm64 x86_64; do
   echo "▸ Compiling Swift for $ARCH…"
-  if ! swift build -c release --arch $ARCH > "$ROOT/.build/release-build-$ARCH.log" 2>&1; then
-    grep -E "error:" "$ROOT/.build/release-build-$ARCH.log" | sort -u
-    echo "✗ Swift build failed — nothing installed"
-    exit 1
+  LOG="$ROOT/.build/release-build-$ARCH.log"
+  if ! swift build -c release --arch $ARCH > "$LOG" 2>&1; then
+    SDK=$(older_sdk)
+    if grep -q "SwiftUIMacros" "$LOG" && [[ -n "$SDK" && -z "${SDKROOT:-}" ]]; then
+      echo "  (SwiftUI macro plugin missing — building against $(basename "$SDK"))"
+      export SDKROOT="$SDK"
+      swift build -c release --arch $ARCH > "$LOG" 2>&1 || { grep -E "error:" "$LOG" | sort -u; echo "✗ Swift build failed — nothing installed"; exit 1; }
+    else
+      grep -E "error:" "$LOG" | sort -u
+      echo "✗ Swift build failed — nothing installed"
+      exit 1
+    fi
   fi
 done
 BIN="$ROOT/.build/MyToolbox-universal"

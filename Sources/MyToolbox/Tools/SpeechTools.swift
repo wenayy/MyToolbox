@@ -63,12 +63,21 @@ enum DocText {
 extension VNImageRequestHandler {
     /// Like `perform`, but retries a couple of times: the Neural Engine sometimes refuses a job
     /// while it's busy (an "e5rt" error) and succeeds a moment later.
+    /// If the accurate text model still can't run, text requests fall back to the fast model, which doesn't
+    /// need that Neural Engine program.
     func performRetrying(_ requests: [VNRequest]) throws {
         var attempt = 0
         while true {
             do { return try perform(requests) } catch {
                 attempt += 1
-                if attempt >= 3 { throw ToolError("Couldn't analyze the image: \(error.localizedDescription)") }
+                if attempt >= 3 {
+                    let text = requests.compactMap { $0 as? VNRecognizeTextRequest }.filter { $0.recognitionLevel == .accurate }
+                    if !text.isEmpty {
+                        text.forEach { $0.recognitionLevel = .fast }
+                        if (try? perform(requests)) != nil { return }
+                    }
+                    throw ToolError("Couldn't analyze the image: \(error.localizedDescription)")
+                }
                 Thread.sleep(forTimeInterval: 0.4 * Double(attempt))
             }
         }

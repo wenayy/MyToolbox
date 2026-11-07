@@ -47,6 +47,17 @@ MainActor.assumeIsolated {
     for id in pages {
         if let file = opens[id] { AppModel.shared.open(id, files: [file]) } else { AppModel.shared.selection = id }
         pump(opens[id] == nil ? 0.6 : 2.5)
+        if id == "redact", opens[id] != nil, ProcessInfo.processInfo.environment["SNAP_REDACT"] != nil {
+            let doc = Editors.redact
+            if let image = doc.image {
+                for f in [RedactFind.emails, .phones, .numbers] {
+                    let rects = (try? RedactFinder.find(f, in: image)) ?? []
+                    doc.add(rects.map { Markup(kind: .redact(.black), start: $0.origin, end: CGPoint(x: $0.maxX, y: $0.maxY)) })
+                }
+                doc.add([Markup(kind: .redact(.black), start: CGPoint(x: 330, y: 535), end: CGPoint(x: 880, y: 590))])
+            }
+            pump(1)
+        }
         guard let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
         view.cacheDisplay(in: view.bounds, to: rep)
 
